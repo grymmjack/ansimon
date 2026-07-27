@@ -261,3 +261,40 @@ Two setup errors will make a good LoRA look broken. Both were hit first time:
 Then sweep checkpoint x strength and score with `style-report.py` rather than
 eyeballing. Strength matters a lot: an undertrained LoRA at 1.0 collapses into
 noise bands while the same checkpoint at 0.7 is coherent.
+
+### Measured: does a style LoRA actually help?
+
+Yes, substantially — and with a tradeoff the style score cannot see.
+
+Trained on 215 samples from a 112-piece personal corpus (SD 1.5, Titan Xp,
+648 steps, ~2h36m). Scored with `style-report.py` against that same corpus,
+6-10 generations per cell:
+
+```
+             0.5     0.7     0.9     1.0     1.1     1.2
+  epoch 2   66.5    69.9    71.8
+  epoch 4   66.3    70.2    72.7
+  epoch 6   68.2    72.3    77.6    76.8    77.0    75.7
+```
+
+Baseline (stock `ansi-art-xl`): **70.1**. Best: **epoch 6 @ 0.9 = 77.6**
+(fg 64.8, bg 82.3, glyph 85.7, tone 77.5). Peaks at 0.9-1.1, turns over at 1.2 —
+where background palette keeps improving (88.0) but tonal transitions collapse
+(64.8), i.e. correct black canvas filled with harsh high-contrast jumps.
+
+**The catch: prompt adherence falls as strength rises.** Percentage of pixels
+that change when only the SUBJECT changes at a fixed seed:
+
+    strength 0.5 -> 47-65%      strength 0.7 -> 39-50%      strength 0.9 -> 30-40%
+
+At 0.9+ the LoRA reproduces learned *layouts* (the corpus has 33 "bbs menu
+screen" samples and it learned that composition) and largely ignores the prompt.
+`style-report.py` scores style-match only and is blind to this, so a high score
+partly rewards memorisation. **Use 0.7 for steerable output, 0.9 for maximum
+style.** Fixing the tradeoff needs more varied source art, not more training.
+
+Two predictions made here that the data refuted, recorded so they are not
+re-derived: the glyph-vocabulary deficit was called "structural, the LoRA cannot
+fix it" (it went 47.4 -> 85.7), and more-trained checkpoints were expected to
+need *lower* strength (the opposite held; the apparent collapse at 1.0 was a
+resolution bug, not the checkpoint).
