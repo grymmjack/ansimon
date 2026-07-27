@@ -251,6 +251,89 @@ def slug(text):
     return out[:40] or "art"
 
 
+def convert_existing(a):
+    """`--from-ans`: read existing art and re-emit it — no GPU, no model.
+
+    ansimon already owns a CP437 glyph table, a renderer, an XBin writer and a
+    terminal-accurate .ANS reader, so converting art it didn't generate is
+    almost free. Useful for turning a folder of scene files into PNGs, or
+    lifting old .ANS into XBin so the width and font travel with the file.
+    """
+    import glob
+    # These modules use relative imports, so the PACKAGE's parent has to be on
+    # the path — not the package directory itself (which is what the top of
+    # this file adds, for the flat `palette`/`cp437` lookups).
+    for parent in (os.path.join(_SCRIPT_DIR, "custom_nodes"),
+                   os.path.join(COMFY, "custom_nodes")):
+        if os.path.isdir(os.path.join(parent, "ansi_quantize")):
+            sys.path.insert(0, parent)
+            break
+    else:
+        sys.exit("can't find the ansi_quantize package — run ./install.sh")
+    from ansi_quantize import ansi as A, xbin as X
+    from ansi_quantize.nodes import render_cells
+    from ansi_quantize.palette import parse_palette
+    import numpy as np
+    from PIL import Image
+
+    src = os.path.abspath(os.path.expanduser(a.from_ans))
+    files = (sorted(glob.glob(os.path.join(src, "*.ans")) +
+                    glob.glob(os.path.join(src, "*.xb")))
+             if os.path.isdir(src) else [src])
+    if not files:
+        sys.exit(f"--from-ans: nothing to convert at {src}")
+
+    pal = np.asarray(parse_palette(a.palette, a.custom_hex), np.uint8)
+    dest = os.path.abspath(os.path.expanduser(a.output_to)) if a.output_to \
+        else os.path.join(OUTPUT, "ansimon")
+    os.makedirs(dest, exist_ok=True)
+
+    print(f"\n{C['mag']}ansimon{C['rst']} converting {len(files)} file(s)"
+          f"  {C['dim']}-> {dest}{C['rst']}")
+    done = 0
+    for f in files:
+        raw = open(f, "rb").read()
+        base = os.path.splitext(os.path.basename(f))[0]
+        try:
+            if raw[:5] == X.MAGIC:
+                body = A.read_sauce(raw)[1]
+                p = X.parse_xbin(body)
+                ch, fg, bg = p["ch"], p["fg"], p["bg"]
+                ice = p["ice"]
+            else:
+                ch, fg, bg = A.parse_ans(raw)
+                ice = (A.read_sauce(raw)[0] or {}).get("ice", False)
+        except Exception as e:
+            print(f"   {C['yel']}skip{C['rst']} {base}: {e}")
+            continue
+
+        if a.rows:                       # --rows crops to the first N rows
+            ch, fg, bg = ch[:a.rows], fg[:a.rows], bg[:a.rows]
+
+        out = []
+        if not a.ans_only:
+            png = os.path.join(dest, base + ".png")
+            Image.fromarray(render_cells(ch, fg, bg, pal)).save(png)
+            out.append(png)
+        if a.format in ("xb", "both"):
+            p2 = os.path.join(dest, base + ".xb")
+            X.write_xbin(p2, ch, fg, bg, palette=pal, ice=ice,
+                         compress=not a.no_compress,
+                         embed_font=not a.no_embed_font)
+            out.append(p2)
+        if a.format in ("ans", "both") and not f.endswith(".ans"):
+            p3 = os.path.join(dest, base + ".ans")
+            A.write_ans(p3, ch, fg, bg, ice=ice, sauce=not a.no_sauce,
+                        title=a.title or base, author=a.author, group=a.group,
+                        date=a.date)
+            out.append(p3)
+        done += 1
+        print(f"   ✅ {base:<22} {ch.shape[1]}x{ch.shape[0]} cells  ->  "
+              f"{', '.join(os.path.basename(o) for o in out)}")
+    print(f"   {C['dim']}converted {done}/{len(files)}{C['rst']}\n")
+    return 0
+
+
 def parse_size(spec):
     """'80x40' | '80' | a preset name -> (cols, rows)."""
     spec = (spec or "").strip().lower()
@@ -648,12 +731,15 @@ def main():
     p.add_argument("--list-palettes", action="store_true", help="list palettes and exit")
     p.add_argument("--list-styles", action="store_true", help="list style guides and exit")
     p.add_argument("--doctor", action="store_true", help="check the install and exit")
+    p.add_argument("--from-ans", dest="from_ans", default=None, metavar="FILE|DIR",
+                   help="skip generation: read existing .ans/.xb and convert")
     p.add_argument("--no-open", action="store_true", help="don't auto-open the result")
 
     a = p.parse_args()
 
     if a.show_help or (not a.prompt and not a.batch and not any(
-            (a.list_charsets, a.list_palettes, a.list_styles, a.doctor))):
+            (a.list_charsets, a.list_palettes, a.list_styles, a.doctor,
+             a.from_ans))):
         print_help()
         return 0
     if a.list_charsets:
@@ -667,6 +753,8 @@ def main():
         return 0
     if a.doctor:
         return doctor()
+    if a.from_ans:
+        return convert_existing(a)
 
     # --- canvas -----------------------------------------------------------
     try:

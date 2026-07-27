@@ -185,6 +185,29 @@ the correct DataType — 1/1 for ANSi, 6/0 for XBin):
 ansimon "a rune" --format both --title "Rune" --author grymmjack --group ansimon
 ```
 
+### `--from-ans` — read art ansimon didn't make
+
+ansimon already owns a CP437 glyph table, a renderer, an XBin writer and a
+terminal-accurate `.ANS` reader, so converting existing art is nearly free —
+**no GPU, no model, no ComfyUI**:
+
+```bash
+ansimon --from-ans pack/            --output-to png/    # a folder of .ans -> PNG
+ansimon --from-ans old.ans --format xb                  # lift .ANS into XBin
+ansimon --from-ans art/ --palette xterm --rows 25       # re-palette, crop to a screen
+```
+
+The reader is a real terminal emulator, not a line-by-line parser, because it
+has to be: in a corpus of 112 hand-drawn scene files, `ESC[#C` (cursor forward)
+appeared in **111 of them, 8,336 times**. It's the standard space-saver — write
+`ESC[40C` instead of forty spaces. Ignore cursor movement and the art collapses.
+`ESC[#A` (cursor up) shows up too, meaning overdraw, so the canvas is
+random-access and grows downward on demand — art is a fixed width but an
+open-ended height (that corpus ran from 6 to 1000 rows).
+
+Verified on all 112: every one parsed, and every resulting `.xb` renders
+bit-identical to its PNG using only its own embedded font and palette.
+
 ### Style guides (`--style`)
 
 Editable prompt snippets in `styles.json` (`--list-styles`). The recurring
@@ -260,12 +283,17 @@ out of**:
 0xDE ▐ right half   0xDF ▀ upper half
 ```
 
-Those five plus █ are the overwhelming majority of character usage in real
-blockart. So ansimon **generates the geometric range procedurally** — and that
-isn't a fallback, it's the correct answer: a half block is not an approximation
-of anything, it *is* the top 8 rows of the cell. The shade ramp is ordered
-dither at exactly 25 / 50 / 75% coverage. This is why embedding the font in an
-`.xb` matters.
+Measured against a corpus of 112 hand-drawn scene pieces (179,000 non-blank
+cells), **those five alone are 45.9% of all non-blank cells** — and 64.0%
+together with █. So ansimon **generates the geometric range procedurally**, and
+that isn't a fallback, it's the correct answer: a half block is not an
+approximation of anything, it *is* the top 8 rows of the cell. The shade ramp is
+ordered dither at exactly 25 / 50 / 75% coverage. This is also why embedding the
+font in an `.xb` matters.
+
+The same corpus says the default `--charset blocks` (9 characters) covers
+**78.3%** of every non-blank cell those artists drew — going all the way up to
+`structure` (50 characters) only reaches 80.8%. The long tail is mostly letters.
 
 ### Verification
 

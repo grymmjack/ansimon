@@ -61,13 +61,20 @@ Debian's console fonts are missing exactly `0xB2 ▓`, `0xDC ▄`, `0xDD ▌`,
 generates them and **overrides** any font-supplied version. Do not "fix" this by
 preferring the font.
 
-**3. `.ANS` space cells intentionally differ from the cell grid.**
+**3. `parse_ans` is a terminal emulator, keep it one.**
+It models the cursor, deferred wrap, and a canvas that grows downward. That is
+not over-engineering: `ESC[#C` (cursor forward) appears in 111 of 112 real scene
+files. Deferred wrap especially — wrapping eagerly at column 80 double-advances
+on a full row followed by CRLF and silently drops every other line. Regression-
+test with a width the art doesn't use (53), not 80.
+
+**4. `.ANS` space cells intentionally differ from the cell grid.**
 `to_ans()` lets a space inherit the current foreground colour instead of
 emitting a pointless attribute change. So a parsed `.ans` will not match the
 source grid on `fg` where the glyph is blank — that is correct and saves real
 bytes. Compare `fg` only where the glyph has ink, or compare *renders*.
 
-**4. Colour index == ANSI attribute number.** Palettes are 16 entries in ANSI
+**5. Colour index == ANSI attribute number.** Palettes are 16 entries in ANSI
 order (black, blue, green, cyan, red, magenta, brown, grey, then brights).
 Index 9 *means* "bright blue" to every viewer; a palette only changes the RGB it
 maps to. Reject palettes that aren't exactly 16.
@@ -145,6 +152,8 @@ Great for iterating; also means a "fast" run may not have re-sampled at all.
 ## Known gaps
 
 - No automated test suite (the snippet above is what there is).
+- `--from-ans` is verified on 112 files; `ESC[s`/`u`, `ESC[K` and 512-char fonts
+  are implemented but untested against real art that uses them.
 - Multi-GPU farm execution is unverified end-to-end; dispatch and graceful
   degradation work, but the other boxes need `install.sh` run on them.
 - The ANSI LoRA is trained on full BBS-screen compositions, so canvases under

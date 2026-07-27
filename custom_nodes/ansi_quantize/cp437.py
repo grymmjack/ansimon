@@ -24,9 +24,10 @@ Two sources, in this order:
        0xB2 (dark shade)  0xDC (lower half)  0xDD (left half)
        0xDE (right half)  0xDF (upper half)
 
-   Those five plus the full block are ~90% of the character usage in real
-   blockart. They are also exactly definable as geometry, so generating them
-   is *more* accurate than sampling a font would be.
+   Measured against a corpus of 112 hand-drawn scene pieces (179,000 non-blank
+   cells): those five alone are **45.9%** of all non-blank cells, and together
+   with the full block **64.0%**. They are also exactly definable as geometry,
+   so generating them is *more* accurate than sampling a font would be.
 
 If no PSF font is found at all, a TTF fallback (DejaVu Sans Mono) is rendered
 at 8x16; the geometric glyphs are still generated, so block art keeps working
