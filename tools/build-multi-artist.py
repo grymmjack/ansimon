@@ -65,10 +65,15 @@ def cellhash(path):
 
 
 def art_files(d):
-    out = []
-    for e in ("*.ans", "*.xb", "*.xbin", "*.ANS"):
-        out += glob.glob(os.path.join(d, e))
-    return sorted(f for f in out if os.path.isfile(f))
+    """Every art file under `d`, at any depth, any case.
+
+    Recursive because a personal collection is usually filed by pack — 70
+    subfolders, one per release — while an extractor's output is flat. Case
+    -insensitive because the archive is DOS-era uppercase .ANS.
+    """
+    return sorted(f for f in glob.glob(os.path.join(d, "**", "*"), recursive=True)
+                  if os.path.isfile(f)
+                  and f.lower().endswith((".ans", ".xb", ".xbin")))
 
 
 def main():
