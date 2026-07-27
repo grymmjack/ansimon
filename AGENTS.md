@@ -298,3 +298,26 @@ re-derived: the glyph-vocabulary deficit was called "structural, the LoRA cannot
 fix it" (it went 47.4 -> 85.7), and more-trained checkpoints were expected to
 need *lower* strength (the opposite held; the apparent collapse at 1.0 was a
 resolution bug, not the checkpoint).
+
+### Captioning (`tools/caption-ui.py`, `tools/apply-captions.py`)
+
+The first LoRA learned layouts instead of steerable style because the captions'
+subject slot held BBS *names* — "colly 10/96", "borgasm electronic magazine" —
+never a description of what is depicted. The model was never shown the word
+"skull" attached to a skull, which is exactly why prompt adherence collapsed at
+high strength.
+
+**Auto-captioning does not fix this.** Measured on this corpus, BLIP-large
+returned "a photo of a city at night" for a BORGASM graffiti logo and "a man
+with a skateboard" for FOKUS. General VLMs are trained on photographs and
+cannot read 16-colour blockart — their output is worse than nothing as training
+signal. Florence-2 would be the next thing to try, but its remote code is
+incompatible with `transformers 5.11`; put it in its OWN venv rather than
+downgrading ComfyUI's, which pixelmon and soundmon share.
+
+So: human in the loop, loop made fast. `caption-ui.py` emits one self-contained
+HTML file (images as data URIs, no server, no network, localStorage autosave).
+It pre-fills everything already known — the SAUCE title and the auto-classified
+piece type — and asks only for the imagery. `apply-captions.py` writes the
+results back, preserving the machine captions as `*.txt.auto` so an A/B against
+the automatic run stays possible.
