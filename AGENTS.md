@@ -184,3 +184,19 @@ not accidents:
 
 Prefer Ampere+ over more VRAM. Pascal has no bf16 and trains SDXL far slower
 even with 12 GB. Stop ComfyUI on the training box — 8 GB SDXL LoRA needs all of it.
+
+## Measuring style (`tools/style-report.py`)
+
+`python3 tools/style-report.py REF_DIR [CAND_DIR]` profiles a corpus, or scores
+a candidate against it (foreground palette, background palette, glyph
+vocabulary, tonal transitions; 100 = identical distributions).
+
+This is the objective answer to "did that change help?", which matters because
+ANSI style is easy to eyeball wrongly. Use it before and after any quantizer
+or LoRA change. Recorded baseline, stock `ansi-art-xl` vs a 112-piece human
+corpus: **overall 70.1** (fg 64.9, bg 77.3, glyph 66.4, tone 71.9).
+
+The tonal-transition metric is the interesting one: mean |Δluma| between
+horizontally adjacent inked cells was 0.068 for the human corpus and 0.152 for
+ansimon — the human moves in small steps (modelling volume), the quantizer
+jumps. That gap is the numeric signature of "converted from a picture".
