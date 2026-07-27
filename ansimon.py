@@ -361,7 +361,11 @@ def gen_size(cols, rows, res):
     area = res * res
     w = (area * aspect) ** 0.5
     h = w / aspect
-    q = lambda v: max(512, int(round(v / 64)) * 64)
+    # Floor of 384, not 512: SDXL never lands here anyway at --res 1024, but
+    # SD 1.5 legitimately trains and generates at 640x384 (an 80x24 screen at
+    # 1:1), and clamping that to 512 silently changes the aspect the model was
+    # taught. Anything below 384 is degenerate for either model.
+    q = lambda v: max(384, int(round(v / 64)) * 64)
     return q(w), q(h)
 
 
@@ -370,11 +374,17 @@ def build_graph(a, seed, subject=None, server=None):
     # The ANSI LoRA does the heavy lifting; the base prompt stays simple and
     # --style snippets steer. "flat colors, bold shapes" is what survives the
     # trip down to 80 columns and 16 colours — anything subtle does not.
-    parts = [f"ansiart, {subject}"]
-    if a.style_add:
-        parts.append(a.style_add)
-    parts.append("bold shapes, flat colors, high contrast, simple background")
-    prompt = ", ".join(parts)
+    if a.raw_prompt:
+        # Verbatim. A LoRA you trained yourself has its own trigger word and
+        # caption shape; wrapping it in another LoRA's trigger ("ansiart") and
+        # a canned tail actively fights it.
+        prompt = subject
+    else:
+        parts = [f"ansiart, {subject}"]
+        if a.style_add:
+            parts.append(a.style_add)
+        parts.append("bold shapes, flat colors, high contrast, simple background")
+        prompt = ", ".join(parts)
     negative = a.negative + ((", " + a.style_neg) if a.style_neg else "")
 
     name = slug(subject) if a.batch else (a.name or slug(subject))
@@ -670,6 +680,8 @@ def main():
     p.add_argument("--steps", type=int, default=None, help="sampling steps. default 30")
     p.add_argument("--cfg", type=float, default=None, help="prompt adherence. default 7.0")
     p.add_argument("--seed", type=int, default=-1, help="-1 = random each run")
+    p.add_argument("--raw-prompt", dest="raw_prompt", action="store_true",
+                   help="use the prompt verbatim — no 'ansiart' prefix or canned tail")
     p.add_argument("--negative", default=DEFAULT_NEGATIVE,
                    help="override the default negative prompt")
     p.add_argument("--name", default=None, help="output filename base (default: from prompt)")

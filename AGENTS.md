@@ -241,3 +241,23 @@ a Titan Xp, but that reflects CUDA-version support, not tensor cores. Separately
 fp16 vs fp32 matmul on that card benchmarks at 1.07x — i.e. a wash, not the
 1/64 disaster the Pascal spec sheet implies, because cuBLAS accumulates in fp32.
 Precision is not the lever on Pascal; step count is.
+
+### Testing a LoRA you trained here
+
+Two setup errors will make a good LoRA look broken. Both were hit first time:
+
+1. **Generate at the training resolution.** The dataset builder emits 640x384
+   for SD1.5 and 1280x768 for SDXL; generating at a different latent size makes
+   SD1.5 in particular fall apart. `gen_size()`'s floor is 384 (not 512) so an
+   80x24 canvas at `--res 496` lands on exactly 640x384. Don't raise that floor
+   back without checking the SD1.5 path.
+2. **Use `--raw-prompt`.** Without it ansimon wraps the subject as
+   `ansiart, {subject}, bold shapes, flat colors, ...` — and `ansiart` is the
+   *stock* LoRA's trigger word. A LoRA trained from `build-lora-dataset.py`
+   captions wants its prompt in that same shape:
+   `<token>, ansi art, <kind>, <subject>, cp437 block characters, 16 color ega
+   palette, text mode art`.
+
+Then sweep checkpoint x strength and score with `style-report.py` rather than
+eyeballing. Strength matters a lot: an undertrained LoRA at 1.0 collapses into
+noise bands while the same checkpoint at 0.7 is coherent.
