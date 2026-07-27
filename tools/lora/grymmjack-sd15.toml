@@ -53,8 +53,8 @@ color_aug = false
 output_name = "grymmjack-15"
 output_dir = "./output"
 save_model_as = "safetensors"
-save_every_n_epochs = 2
-max_train_epochs = 15          # cheap here; use this run to find the real number
+save_every_n_epochs = 2   # gives you 3 checkpoints to compare
+max_train_epochs = 6
 
 mixed_precision = "fp16"
 full_fp16 = false              # see note above — unstable on Pascal

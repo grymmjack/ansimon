@@ -219,3 +219,25 @@ jumps. That gap is the numeric signature of "converted from a picture".
 Do not "unify" these. The SD1.5 run exists to find hyperparameters cheaply;
 copying SDXL's memory-saving settings onto it would throw away the whole point.
 Never set `full_fp16` on Pascal — without bf16 to fall back on it diverges.
+
+### Sizing a training run
+
+`repeats x epochs` is how many times the model sees each image. For a style
+LoRA on a few hundred samples that should land around **10-15 total passes**.
+Defaults here are `--repeats 2` and `max_train_epochs = 6` (12 passes), which
+on 215 samples at batch 4 is 648 steps.
+
+This was got wrong first time: 6 repeats x 15 epochs = 90 passes = 4,845 steps,
+which on a Titan Xp is a **20-hour** run — for the config whose entire purpose
+is to be the quick one. Measure step count before launching:
+
+    steps = images x repeats x epochs / batch_size
+
+Measured throughput, Titan Xp (Pascal, 12 GB), SD1.5 @ 640x384, batch 4:
+**~14.5 s/it**. So 648 steps is about 2.6 hours.
+
+One myth to not re-derive: `torch.cuda.is_bf16_supported()` returns **True** on
+a Titan Xp, but that reflects CUDA-version support, not tensor cores. Separately,
+fp16 vs fp32 matmul on that card benchmarks at 1.07x — i.e. a wash, not the
+1/64 disaster the Pascal spec sheet implies, because cuBLAS accumulates in fp32.
+Precision is not the lever on Pascal; step count is.

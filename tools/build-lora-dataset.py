@@ -118,8 +118,12 @@ def main():
     ap.add_argument("out", help="dataset output folder")
     ap.add_argument("--token", default="grymmjack",
                     help="style trigger word. default grymmjack")
-    ap.add_argument("--repeats", type=int, default=6,
-                    help="kohya repeat count baked into the folder name. default 6")
+    # Repeats x epochs = how many times the model sees each image. For a style
+    # LoRA on a few hundred samples that wants to land around 10-15 total, not
+    # 90 — which is what 6 repeats x 15 epochs gave, and it turned a "fast
+    # iteration" run into a 20-hour one on a Titan Xp.
+    ap.add_argument("--repeats", type=int, default=2,
+                    help="kohya repeat count baked into the folder name. default 2")
     ap.add_argument("--rows", type=int, default=ROWS_PER_SCREEN,
                     help=f"rows per screen. default {ROWS_PER_SCREEN}")
     ap.add_argument("--upscale", type=int, default=UPSCALE)
