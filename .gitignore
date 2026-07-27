@@ -1,0 +1,19 @@
+# Your personal render targets (copy servers.example.json -> servers.json)
+servers.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Generated art
+output/
+*.ans
+!examples/*.ans
+examples/*.part
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

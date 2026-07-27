@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy to servers.json and add your machines. Any box running ComfyUI with the ansi_quantize node installed can be a render target. Pass several to --server as a comma list to fan jobs across them: ansimon \"a dragon\" -n 16 --server rtx,titan,local",
+  "local": "http://127.0.0.1:8188",
+  "titan": "http://192.168.1.20:8188",
+  "rtx": "http://192.168.1.10:8188",
+  "mac": "http://192.168.1.30:8188"
+}

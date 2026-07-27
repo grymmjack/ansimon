@@ -1,0 +1,155 @@
+# AGENTS.md — working on ansimon
+
+Context for AI agents (and humans) making changes here.
+
+## What this is
+
+A CLI that turns a text prompt into **real ANSI art**: SDXL + an ANSI-art LoRA
+produces an image, a custom ComfyUI node quantizes it to a CP437 character grid,
+and that grid is written out as `.ans` / `.xb` *and* rendered to a PNG.
+
+ansimon is the third of three sibling projects that deliberately share one
+engine:
+
+| | repo | model | its custom node |
+|---|---|---|---|
+| pixelmon | `~/pixelmon` | SDXL + Pixel Art XL | `pixelart_palette` |
+| soundmon | `~/git/soundmon` | Stable Audio Open / ACE-Step | `retro_sfx` |
+| **ansimon** | `~/git/ansimon` | SDXL + ANSI Art Style XL | `ansi_quantize` |
+
+They share `~/ComfyUI` (venv, torch, port 8188), `~/launch-comfyui.sh`, and the
+`servers.json` render farm. **Match their conventions** — same CLI flag names,
+same `install.sh` / `download-models.sh` shape, same `bin/<name>` wrapper that
+starts ComfyUI on demand, same seed-in-filename rule.
+
+## Layout
+
+```
+ansimon.py                    CLI, ComfyUI graph builder, render farm
+bin/ansimon                   wrapper: starts ComfyUI if it isn't up
+styles.json                   prompt style guides (--style)
+custom_nodes/ansi_quantize/
+    nodes.py                  AnsiQuantize (quantize+render) + SaveAnsi (serialize)
+    cp437.py                  the 256-glyph 8x16 bitmap table
+    ansi.py                   .ANS writer/reader, SAUCE, cell transport blob
+    xbin.py                   .XB writer/reader, RLE, embedded font/palette
+    palette.py                the 16 ANSI colours, .GPL loading
+```
+
+`install.sh` symlinks `ansimon.py`, `styles.json` and `custom_nodes/ansi_quantize`
+into `~/ComfyUI/`. **The repo is the source of truth**; the ComfyUI copies are
+symlinks. Editing files here takes effect immediately — but see "restart" below.
+
+## Invariants — do not break these
+
+**1. The PNG must be a pixel-exact rendering of the emitted art file.**
+This is the project's whole claim. `cp437.glyph_bitmaps()` is the single source
+of truth used by *both* the quantizer (as coverage masks) and the renderer (as
+bitmaps), which is what makes it true by construction. If you add a code path
+that draws glyphs some other way, you have broken it.
+
+Verify:
+```python
+ch, fg, bg = ansi.parse_ans(open('x.ans','rb').read(), ice=True)
+rr = nodes.render_cells(ch, fg, bg, np.asarray(palette.ANSI16, np.uint8))
+assert (rr == np.asarray(Image.open('x.png').convert('RGB'))).all()
+```
+
+**2. The geometric glyphs are generated, not loaded.**
+Debian's console fonts are missing exactly `0xB2 ▓`, `0xDC ▄`, `0xDD ▌`,
+`0xDE ▐`, `0xDF ▀` — the glyphs blockart is built from. `_geometric_glyphs()`
+generates them and **overrides** any font-supplied version. Do not "fix" this by
+preferring the font.
+
+**3. `.ANS` space cells intentionally differ from the cell grid.**
+`to_ans()` lets a space inherit the current foreground colour instead of
+emitting a pointless attribute change. So a parsed `.ans` will not match the
+source grid on `fg` where the glyph is blank — that is correct and saves real
+bytes. Compare `fg` only where the glyph has ink, or compare *renders*.
+
+**4. Colour index == ANSI attribute number.** Palettes are 16 entries in ANSI
+order (black, blue, green, cyan, red, magenta, brown, grey, then brights).
+Index 9 *means* "bright blue" to every viewer; a palette only changes the RGB it
+maps to. Reject palettes that aren't exactly 16.
+
+## Testing
+
+There is no test suite yet. What exists is a set of round-trip checks that
+should be run after touching any format code — all are fast and need no GPU:
+
+```bash
+cd custom_nodes
+~/ComfyUI/.venv/bin/python -c "
+import sys; sys.path.insert(0,'.')
+import numpy as np
+from ansi_quantize import ansi as A, xbin as X
+from ansi_quantize.palette import ANSI16
+from ansi_quantize.cp437 import glyph_bitmaps
+rng=np.random.default_rng(1); r,c=17,53
+ch=rng.choice([0x20,0xDB,0xDF,0xB1,0x41],size=(r,c)).astype(np.uint8)
+fg=rng.integers(0,16,(r,c),dtype=np.uint8); bg=rng.integers(0,16,(r,c),dtype=np.uint8)
+b=A.pack_cells(ch,fg,bg,ANSI16,True); c2,f2,b2,_,i2=A.unpack_cells(b)
+assert (c2==ch).all() and (f2==fg).all() and (b2==bg).all() and i2
+d=X.to_xbin(ch,fg,bg,palette=ANSI16,ice=True,compress=True); q=X.parse_xbin(d)
+assert (q['ch']==ch).all() and (q['fg']==fg).all() and (q['bg']==bg).all()
+assert (q['font']==glyph_bitmaps()).all()
+a=A.to_ans(ch,fg,bg,ice=True); e,g,h=A.parse_ans(a,cols=c,rows=r,ice=True)
+vis=ch!=0x20
+assert (e==ch).all() and (g[vis]==fg[vis]).all() and (h==bg).all()
+print('all round-trips OK')"
+```
+
+Use **non-standard dimensions** (53×17, not 80×25) — width bugs hide behind 80.
+
+`ansimon --doctor` checks the font source, glyph table, node install, and which
+farm boxes answer. Run it first when something looks wrong.
+
+## Gotchas that will waste your time
+
+**Restart ComfyUI after changing node code.** Custom nodes load at startup.
+Symlinks mean your edit is already in place, but the running process has the old
+module. `--doctor` shows the node as installed either way — check
+`/object_info` for the actual registered schema.
+
+**Never `pkill -f "ComfyUI/main.py"`.** The pattern matches the invoking shell's
+own command line and kills your shell. Get the PID from the port:
+```bash
+PID=$(ss -ltnp | grep 8188 | grep -oP 'pid=\K[0-9]+' | head -1)
+```
+
+**One GPU, three tools.** An ansimon job queued behind a soundmon ACE-Step song
+render (10 GB model) just sits there; `ansimon.py` polls `/history` for 900 s, so
+it looks like a hang. On an 8 GB card, loading SDXL after ACE-Step OOMs and kills
+the server. Check `curl -s localhost:8188/queue` and
+`grep -avE 'it/s|%\|' ~/ComfyUI/server.log | tail` before assuming a bug.
+
+**Use `python -u` when diagnosing.** stdout is block-buffered when piped, so
+`timeout` discards everything a hung run had printed.
+
+**ComfyUI caches by node inputs.** Re-running with the same `--seed` but a
+different `--charset` reuses the sampled image — first run ~20 s, variations ~1 s.
+Great for iterating; also means a "fast" run may not have re-sampled at all.
+
+## Conventions
+
+- Comments explain **why**, not what. The codebase leans on this — e.g. why
+  dithering is damped, why the tie-break prefers `█`+bright-fg over space+bright-bg.
+- Keep the CLI flag vocabulary aligned with pixelmon/soundmon. New flags should
+  feel like they could have existed there.
+- The seed goes in every output filename so any result is re-runnable.
+- Anything that bounds output (dropping a farm box, truncating) must say so on
+  stdout. A silently shrinking farm looks like one slow GPU.
+- `servers.json` is gitignored — it holds private LAN addresses. Only ever commit
+  `servers.example.json`.
+
+## Known gaps
+
+- No automated test suite (the snippet above is what there is).
+- Multi-GPU farm execution is unverified end-to-end; dispatch and graceful
+  degradation work, but the other boxes need `install.sh` run on them.
+- The ANSI LoRA is trained on full BBS-screen compositions, so canvases under
+  ~32 columns get a whole scene crammed into a tile. This is a model limitation,
+  not a quantizer one — don't try to fix it in `ansi_quantize`.
+- Nothing is trained natively on `.ANS`. The obvious next step is 16colo.rs →
+  tokenize cells as (glyph, fg, bg) → small autoregressive transformer. That
+  would replace the LoRA, not the node.
