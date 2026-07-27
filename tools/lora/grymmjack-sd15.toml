@@ -1,0 +1,93 @@
+# kohya sd-scripts config — style LoRA on SD 1.5, tuned for a 12 GB Pascal card
+# (Titan Xp / 1080 Ti). This is the FAST ITERATION run: use it to find the right
+# learning rate and epoch count cheaply, then apply what you learned to the
+# slower SDXL job.
+#
+# Run with:
+#   accelerate launch --num_cpu_threads_per_process 4 train_network.py \
+#       --config_file grymmjack-sd15.toml
+#
+# Why this looks so different from the SDXL config
+# ------------------------------------------------
+# SD 1.5's UNet is ~860M parameters against SDXL's 2.6B, and this card has 12 GB
+# instead of 8. That inverts nearly every decision:
+#
+#   no gradient_checkpointing   There is VRAM to spare, so don't buy memory with
+#                               compute. This alone is worth ~30% wall clock —
+#                               and it is the tax the 8 GB SDXL run cannot avoid.
+#   train_batch_size = 4        Bigger batches, steadier gradients.
+#   plain AdamW                 8-bit optimiser state saves memory we don't need.
+#   train the text encoder      Affordable here, and it helps a style LoRA learn
+#                               its trigger word properly. (The SDXL config can't:
+#                               caching text encoder outputs unloads them.)
+#
+#   fp16, NOT bf16              Pascal predates bf16 entirely. Master weights stay
+#                               fp32 with loss scaling — the standard, well-worn
+#                               path for SD1.5 on this generation of card.
+#                               Do NOT set full_fp16 here; it is unstable without
+#                               bf16 to fall back on.
+#
+# Resolution: build the dataset with `--upscale 1`. An 80x24 screen renders at
+# exactly 640x384 — both divisible by 64, ~6% under SD1.5's native 512x512 pixel
+# budget. No upscale, no crop, no resampling anywhere.
+
+[model]
+pretrained_model_name_or_path = "/home/grymmjack/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.safetensors"
+v2 = false
+v_parameterization = false
+
+[dataset]
+resolution = "640,384"
+enable_bucket = false          # every sample is exactly 640x384
+train_batch_size = 4
+max_data_loader_n_workers = 4
+persistent_data_loader_workers = true
+caption_extension = ".txt"
+shuffle_caption = false
+keep_tokens = 3                # pin "<token>, ansi art, <kind>" at the front
+# No flip_aug — half the corpus is lettering, and mirroring teaches backwards
+# letterforms.
+color_aug = false
+
+[training]
+output_name = "grymmjack-15"
+output_dir = "./output"
+save_model_as = "safetensors"
+save_every_n_epochs = 2
+max_train_epochs = 15          # cheap here; use this run to find the real number
+
+mixed_precision = "fp16"
+full_fp16 = false              # see note above — unstable on Pascal
+gradient_checkpointing = false # 12 GB means we don't need it, and it costs speed
+optimizer_type = "AdamW"
+xformers = true                # falls back to sdpa if the build isn't present
+
+learning_rate = 1e-4
+unet_lr = 1e-4
+text_encoder_lr = 5e-5         # TE always trains slower than the UNet
+lr_scheduler = "cosine_with_restarts"
+lr_scheduler_num_cycles = 3
+lr_warmup_steps = 100
+max_grad_norm = 1.0
+noise_offset = 0.05            # this art is full of pure black and pure white
+min_snr_gamma = 5
+
+cache_latents = true
+cache_latents_to_disk = true
+# NOT caching text encoder outputs — we are training the text encoder.
+
+seed = 42
+clip_skip = 2                  # the SD1.5 convention for style LoRAs
+max_token_length = 225
+prior_loss_weight = 1.0
+
+[network]
+network_module = "networks.lora"
+# More capacity than the SDXL config: the base model is 3x smaller, the VRAM is
+# there, and SD1.5 style LoRAs conventionally run richer.
+network_dim = 32
+network_alpha = 16
+
+[logging]
+logging_dir = "./logs"
+log_prefix = "grymmjack15"

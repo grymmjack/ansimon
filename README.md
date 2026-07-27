@@ -215,11 +215,20 @@ generate in *your* style instead of a generic one. ansimon already supports
 using it — `--lora` has been there all along — so the only new work is training:
 
 ```bash
-./tools/train-lora.sh /path/to/your/ansi/src        # build dataset + train
-./tools/train-lora.sh /path/to/your/ansi/src --prep # dataset only, train elsewhere
+./tools/train-lora.sh /path/to/your/ansi/src         # SDXL — the quality run
+./tools/train-lora.sh /path/to/your/ansi/src --sd15  # SD 1.5 — the fast run
+./tools/train-lora.sh /path/to/your/ansi/src --prep  # dataset only, train elsewhere
 
 ansimon "grymmjack, a skull logo" --lora grymmjack.safetensors
 ```
+
+**Run `--sd15` first.** SD1.5's UNet is 860M parameters against SDXL's 2.6B, so
+on a 12 GB card it needs no memory tricks at all, takes a batch of 4, trains the
+text encoder too, and finishes in a fraction of the time. Use it to find the
+learning rate and epoch count — and to answer "is there enough signal in this
+corpus?" — before committing to a long SDXL job. The resolutions fall out
+perfectly either way: an 80x24 screen is **640x384 native for SD1.5** and
+**1280x768 doubled for SDXL**, both /64-divisible, neither cropped nor resampled.
 
 `tools/build-lora-dataset.py` does the conversion, and three choices in it are
 load-bearing:

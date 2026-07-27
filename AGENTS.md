@@ -200,3 +200,22 @@ The tonal-transition metric is the interesting one: mean |Δluma| between
 horizontally adjacent inked cells was 0.068 for the human corpus and 0.152 for
 ansimon — the human moves in small steps (modelling volume), the quantizer
 jumps. That gap is the numeric signature of "converted from a picture".
+
+### Two training configs, and why they look nothing alike
+
+`tools/lora/grymmjack-sdxl.toml` (8 GB Ampere) and `grymmjack-sd15.toml`
+(12 GB Pascal) invert almost every setting, because the constraint inverts:
+
+|  | SDXL / 3070 | SD 1.5 / Titan Xp |
+|---|---|---|
+| UNet | 2.6B params | 860M |
+| precision | bf16 | **fp16** — Pascal has no bf16 |
+| gradient checkpointing | required | **off** (VRAM to spare; ~30% faster) |
+| batch | 1 | 4 |
+| optimiser | AdamW8bit | plain AdamW |
+| text encoder | can't (outputs cached) | trained, lr 5e-5 |
+| dataset `--upscale` | 2 (1280x768) | **1** (640x384 native) |
+
+Do not "unify" these. The SD1.5 run exists to find hyperparameters cheaply;
+copying SDXL's memory-saving settings onto it would throw away the whole point.
+Never set `full_fp16` on Pascal — without bf16 to fall back on it diverges.
