@@ -1,0 +1,87 @@
+# kohya sd-scripts config — grymmjack style LoRA on SDXL, tuned for an 8 GB RTX 3070.
+#
+# Run with:
+#   accelerate launch --num_cpu_threads_per_process 4 sdxl_train_network.py \
+#       --config_file grymmjack-sdxl.toml
+#
+# Why these settings, since 8 GB is the tight end for SDXL:
+#
+#   bf16              Ampere has real bf16 tensor cores. This is the whole reason
+#                     to train on the 3070 instead of the 12 GB Titan Xp, which is
+#                     Pascal — more VRAM, but weak fp16 and no bf16 at all.
+#   gradient_checkpointing
+#                     Trades compute for memory by recomputing activations.
+#                     Non-negotiable at this VRAM.
+#   AdamW8bit         Optimiser state in 8-bit instead of 32. Saves ~2 GB.
+#   cache_latents     VAE-encode every image once to disk, then unload the VAE.
+#   cache_text_encoder_outputs
+#                     Same for both text encoders. Together these free several GB
+#                     — and they are why `network_train_unet_only` is set: with
+#                     the text encoders unloaded you cannot train them anyway.
+#
+# Area check: 1280x768 is 983k pixels, ~6% SMALLER than SDXL's native
+# 1024x1024. If 1024 LoRA training fits in 8 GB (it does, with the above), so
+# does this. Nothing here needs bucketing — every sample is exactly 1280x768.
+
+[model]
+pretrained_model_name_or_path = "/home/grymmjack/ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors"
+sdxl = true
+
+[dataset]
+# All samples are one size, so bucketing is off — it would only add overhead.
+resolution = "1280,768"
+enable_bucket = false
+train_batch_size = 1
+max_data_loader_n_workers = 2
+persistent_data_loader_workers = true
+caption_extension = ".txt"
+shuffle_caption = false
+keep_tokens = 3            # keep "grymmjack, ansi art, <kind>" pinned at the front
+# NOTE: no flip_aug. Half this corpus is lettering — mirroring it teaches
+# backwards letterforms.
+color_aug = false
+
+[training]
+output_name = "grymmjack"
+output_dir = "./output"
+save_model_as = "safetensors"
+save_every_n_epochs = 2
+max_train_epochs = 12
+
+mixed_precision = "bf16"
+full_bf16 = true
+gradient_checkpointing = true
+optimizer_type = "AdamW8bit"
+sdpa = true                # PyTorch scaled-dot-product attention; no xformers build needed
+
+learning_rate = 1e-4
+unet_lr = 1e-4
+lr_scheduler = "cosine_with_restarts"
+lr_scheduler_num_cycles = 3
+lr_warmup_steps = 100
+max_grad_norm = 1.0
+noise_offset = 0.05        # this art is full of pure black and pure white;
+                           # a little noise offset helps SDXL commit to both ends
+min_snr_gamma = 5
+
+cache_latents = true
+cache_latents_to_disk = true
+cache_text_encoder_outputs = true
+cache_text_encoder_outputs_to_disk = true
+network_train_unet_only = true
+
+seed = 42
+max_token_length = 225
+prior_loss_weight = 1.0
+
+[network]
+network_module = "networks.lora"
+# A style LoRA does not need much capacity — it is learning a palette, an edge
+# treatment and a composition habit, not new objects. 16/8 keeps the file small
+# (~100 MB) and the VRAM headroom real.
+network_dim = 16
+network_alpha = 8
+
+[logging]
+logging_dir = "./logs"
+log_prefix = "grymmjack"

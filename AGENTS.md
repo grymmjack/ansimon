@@ -162,3 +162,25 @@ Great for iterating; also means a "fast" run may not have re-sampled at all.
 - Nothing is trained natively on `.ANS`. The obvious next step is 16colo.rs →
   tokenize cells as (glyph, fg, bg) → small autoregressive transformer. That
   would replace the LoRA, not the node.
+
+## Training a style LoRA (`tools/`)
+
+`tools/build-lora-dataset.py` turns a folder of `.ans` into an SDXL training
+set; `tools/train-lora.sh` drives kohya sd-scripts. Things that are decisions,
+not accidents:
+
+- **2x nearest upscale.** 80 cols x 8 px = 640; 24 rows x 16 px = 384. Doubled
+  that is 1280x768, a native SDXL bucket — no cropping or resampling. Nearest,
+  because bicubic blurs the block edges that are the entire lesson.
+- **`enable_bucket = false`.** Every sample is exactly 1280x768, so bucketing
+  would be pure overhead. If you change `--rows` or `--upscale`, re-check this.
+- **No `flip_aug`.** Half the corpus is lettering; mirroring teaches backwards
+  letterforms. Do not "helpfully" turn it on.
+- **`keep_tokens = 3`** pins `<token>, ansi art, <kind>` at the caption front.
+- **No "screen N of M" in captions.** Position in a scroll has no visual
+  correlate — it is a token the model would have to learn to ignore.
+- **`network_train_unet_only`.** Not a style choice: with the text encoders
+  cached to disk they are unloaded, so they cannot be trained anyway.
+
+Prefer Ampere+ over more VRAM. Pascal has no bf16 and trains SDXL far slower
+even with 12 GB. Stop ComfyUI on the training box — 8 GB SDXL LoRA needs all of it.

@@ -208,6 +208,46 @@ open-ended height (that corpus ran from 6 to 1000 rows).
 Verified on all 112: every one parsed, and every resulting `.xb` renders
 bit-identical to its PNG using only its own embedded font and palette.
 
+### Train a LoRA on your own art
+
+If you have a back catalogue of `.ans`, you can train a style LoRA on it and
+generate in *your* style instead of a generic one. ansimon already supports
+using it — `--lora` has been there all along — so the only new work is training:
+
+```bash
+./tools/train-lora.sh /path/to/your/ansi/src        # build dataset + train
+./tools/train-lora.sh /path/to/your/ansi/src --prep # dataset only, train elsewhere
+
+ansimon "grymmjack, a skull logo" --lora grymmjack.safetensors
+```
+
+`tools/build-lora-dataset.py` does the conversion, and three choices in it are
+load-bearing:
+
+* **2× nearest-neighbour, never bicubic.** An 80-column canvas is 640 px wide
+  and a 24-row screen is 384 px tall. Doubled that is **1280×768 — a native SDXL
+  bucket**, so nothing is cropped, padded or resampled. Nearest because the whole
+  lesson is hard block edges; bicubic would blur the one feature that matters.
+* **Split tall pieces into screens.** Art files run to hundreds of rows. A BBS
+  piece is composed screen by screen, so a 24-row slice is a real composition;
+  a 1000-row scroll squashed into one sample is not.
+* **Captions from SAUCE first.** About half of real art carries a human-written
+  title (`"clockwork orange BBS menu template"`), which beats anything a vision
+  model would invent about a picture made of blocks. The rest get a caption from
+  a letters-to-blocks ratio, which cleanly separates a *logo* from a *menu*.
+
+No horizontal-flip augmentation: half a typical corpus is lettering, and
+mirroring it teaches backwards letterforms.
+
+**GPU choice matters more than VRAM.** Ampere and later have real bf16 tensor
+cores; Pascal doesn't. An 8 GB RTX 3070 beats a 12 GB Titan Xp here — same
+reason pixelmon measured the Titan Xp *slower* than an RX 6600 at inference.
+The config (`tools/lora/grymmjack-sdxl.toml`) is tuned for 8 GB: bf16, gradient
+checkpointing, AdamW8bit, cached latents and text-encoder outputs, UNet only.
+
+> Stop ComfyUI on the training box first — SDXL LoRA at 8 GB needs essentially
+> all of it. The script warns you if something is already holding VRAM.
+
 ### Style guides (`--style`)
 
 Editable prompt snippets in `styles.json` (`--list-styles`). The recurring
