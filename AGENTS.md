@@ -352,3 +352,18 @@ Two bugs worth not repeating, both silent:
 - **Non-80-column art.** A few artists worked at 160-200 columns. The builder now
   splits horizontally as well as vertically, so every sample stays 640x384 and
   `enable_bucket` can stay off.
+
+### Dedup must normalise padding
+
+`cellhash()` trims surrounding blank rows/columns before hashing. This is not a
+nicety: an artist in several groups — or guesting on other people's packs —
+ships the same piece repeatedly, and each release pads it differently. Hashing
+the raw grid treats those as distinct works and over-weights whatever the artist
+released most often.
+
+Measured on one artist across three sources (personal backup, archive extract,
+personal pack collection): **387 files, 198 unique by raw-grid hash, 186 unique
+once padding is normalised** — 201 duplicates in total. Near-duplicate pairs
+(same size, >=95% of cells matching, i.e. a re-release with the group tag
+redrawn) were only 2, so exact-after-trim is enough; fuzzy matching is not worth
+the complexity here.

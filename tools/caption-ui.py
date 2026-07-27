@@ -45,10 +45,20 @@ TEMPLATE = """<!doctype html>
         display:flex;gap:16px;align-items:center;flex-wrap:wrap}
  #bar{flex:1;height:6px;background:#282828;border-radius:3px;overflow:hidden;min-width:120px}
  #fill{height:100%%;background:#4a9;width:0}
- main{flex:1;display:flex;gap:14px;padding:14px;overflow:hidden}
- #stage{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0}
- #img{flex:1;object-fit:contain;image-rendering:pixelated;background:#000;
-      border:1px solid #282828;min-height:0}
+ main{flex:1;display:flex;gap:14px;padding:14px;overflow:hidden;min-height:0}
+ #stage{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0}
+ /* The image must never dictate layout height. A 24-row screen is 640x384 but
+    a full piece can be many screens tall, so the viewport scrolls and the img
+    is clamped to it — otherwise the art runs off the bottom of the page with
+    no way to reach it. */
+ #viewport{flex:1;min-height:0;overflow:auto;background:#000;
+           border:1px solid #282828;display:flex;align-items:flex-start;
+           justify-content:center;padding:4px}
+ #img{image-rendering:pixelated;display:block;flex:none}
+ #img.fit{max-width:100%%;max-height:100%%;object-fit:contain}
+ #zoomrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+ #zoomrow button{padding:3px 9px;font-size:12px}
+ #zoomrow button.on{background:#2e6f5e;border-color:#3a8a74}
  aside{width:340px;display:flex;flex-direction:column;gap:10px}
  label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#888}
  input,textarea,select{width:100%%;background:#1c1c1c;color:#eee;border:1px solid #333;
@@ -74,10 +84,19 @@ TEMPLATE = """<!doctype html>
 </header>
 <main>
   <div id="stage">
-    <img id="img" alt="">
-    <div class="hint">
-      <kbd>Tab</kbd> next field &nbsp; <kbd>Ctrl</kbd>+<kbd>Enter</kbd> save &amp; next &nbsp;
-      <kbd>Ctrl</kbd>+<kbd>&larr;</kbd>/<kbd>&rarr;</kbd> move &nbsp; <kbd>Ctrl</kbd>+<kbd>S</kbd> skip
+    <div id="viewport"><img id="img" class="fit" alt=""></div>
+    <div id="zoomrow">
+      <span class="hint">zoom</span>
+      <button data-z="fit" class="on" onclick="setZoom('fit')">Fit</button>
+      <button data-z="1" onclick="setZoom(1)">1&times;</button>
+      <button data-z="2" onclick="setZoom(2)">2&times;</button>
+      <button data-z="3" onclick="setZoom(3)">3&times;</button>
+      <span class="hint" id="dims"></span>
+      <span class="hint" style="margin-left:auto">
+        <kbd>Ctrl</kbd>+<kbd>Enter</kbd> save &amp; next &nbsp;
+        <kbd>Ctrl</kbd>+<kbd>&larr;</kbd>/<kbd>&rarr;</kbd> move &nbsp;
+        <kbd>Ctrl</kbd>+<kbd>S</kbd> skip &nbsp; <kbd>Ctrl</kbd>+<kbd>0..3</kbd> zoom
+      </span>
     </div>
   </div>
   <aside>
@@ -112,11 +131,28 @@ const TOKEN = %(token)s;
 const KEY = 'ansimon-captions-' + DATA.length;
 let caps = JSON.parse(localStorage.getItem(KEY) || '{}');
 let i = 0;
+let zoom = localStorage.getItem(KEY + '-zoom') || 'fit';
 
 const $ = id => document.getElementById(id);
+function setZoom(z){
+  zoom = z;
+  localStorage.setItem(KEY + '-zoom', z);
+  const img = $('img');
+  document.querySelectorAll('#zoomrow button').forEach(b =>
+    b.classList.toggle('on', b.dataset.z == String(z)));
+  if (z === 'fit'){ img.classList.add('fit'); img.style.width = ''; }
+  else { img.classList.remove('fit'); img.style.width = (img.naturalWidth * z) + 'px'; }
+}
 function render(){
   const d = DATA[i];
-  $('img').src = d.img;
+  const img = $('img');
+  img.onload = () => {
+    $('dims').textContent = img.naturalWidth + '\u00d7' + img.naturalHeight +
+      '  (' + Math.round(img.naturalWidth/8) + '\u00d7' + Math.round(img.naturalHeight/16) + ' cells)';
+    setZoom(zoom);
+    $('viewport').scrollTop = 0;
+  };
+  img.src = d.img;
   $('pos').textContent = (i+1) + ' / ' + DATA.length + '  ' + d.name;
   $('known').innerHTML = '<b>file</b> ' + d.name +
      (d.title ? '<br><b>SAUCE title</b> ' + d.title : '') +
@@ -155,6 +191,9 @@ document.addEventListener('keydown', ev => {
   else if (ev.ctrlKey && ev.key === 'ArrowRight'){ ev.preventDefault(); next(); }
   else if (ev.ctrlKey && ev.key === 'ArrowLeft'){ ev.preventDefault(); prev(); }
   else if (ev.ctrlKey && ev.key.toLowerCase() === 's'){ ev.preventDefault(); skip(); }
+  else if (ev.ctrlKey && '0123'.includes(ev.key)){
+    ev.preventDefault(); setZoom(ev.key === '0' ? 'fit' : Number(ev.key));
+  }
 });
 
 function exportJSON(){
