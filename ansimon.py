@@ -277,8 +277,8 @@ def convert_existing(a):
     from PIL import Image
 
     src = os.path.abspath(os.path.expanduser(a.from_ans))
-    files = (sorted(glob.glob(os.path.join(src, "*.ans")) +
-                    glob.glob(os.path.join(src, "*.xb")))
+    files = (sorted(f for f in glob.glob(os.path.join(src, "*"))
+                    if f.lower().endswith((".ans", ".xb", ".xbin")) and os.path.isfile(f))
              if os.path.isdir(src) else [src])
     if not files:
         sys.exit(f"--from-ans: nothing to convert at {src}")

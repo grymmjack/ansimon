@@ -50,6 +50,10 @@ from ansi_quantize.palette import ANSI16                # noqa: E402
 from ansi_quantize.cp437 import CP437                   # noqa: E402
 
 ROWS_PER_SCREEN = 24          # 24 * 16 px * 2 = 768 -> the 1280x768 SDXL bucket
+COLS_PER_SCREEN = 80          # 80 * 8 px -> 640. Scene art is overwhelmingly 80
+                              # columns, but a few artists worked at 160-200.
+                              # Those get split rather than dropped, so every
+                              # sample stays one size and bucketing stays off.
 UPSCALE = 2
 MIN_INK = 0.06                # skip near-empty screens (trailing blank pages)
 
@@ -126,6 +130,8 @@ def main():
                     help="kohya repeat count baked into the folder name. default 2")
     ap.add_argument("--rows", type=int, default=ROWS_PER_SCREEN,
                     help=f"rows per screen. default {ROWS_PER_SCREEN}")
+    ap.add_argument("--cols", type=int, default=COLS_PER_SCREEN,
+                    help=f"columns per screen. default {COLS_PER_SCREEN}")
     ap.add_argument("--upscale", type=int, default=UPSCALE)
     ARGS = ap.parse_args()
 
@@ -134,8 +140,10 @@ def main():
     imgdir = os.path.join(out, f"{ARGS.repeats}_{ARGS.token}")
     os.makedirs(imgdir, exist_ok=True)
 
-    files = sorted(glob.glob(os.path.join(src, "*.ans")) +
-                   glob.glob(os.path.join(src, "*.xb")))
+    # Case-insensitive: the scene archive is full of DOS-era uppercase .ANS,
+    # and a lowercase-only glob silently drops most of a 1994 pack.
+    files = sorted(f for f in glob.glob(os.path.join(src, "*"))
+                   if f.lower().endswith((".ans", ".xb", ".xbin")) and os.path.isfile(f))
     if not files:
         sys.exit(f"nothing to read in {src}")
 
@@ -151,22 +159,30 @@ def main():
             print(f"  skip {stem}: {e}")
             continue
 
-        n = max(1, -(-ch.shape[0] // ARGS.rows))       # ceil
-        for i in range(n):
-            a, b = i * ARGS.rows, (i + 1) * ARGS.rows
-            c2, f2, b2 = ch[a:b], fg[a:b], bg[a:b]
+        nr = max(1, -(-ch.shape[0] // ARGS.rows))      # ceil
+        nc = max(1, -(-ch.shape[1] // ARGS.cols))
+        for i in range(nr * nc):
+            ri, ci = divmod(i, nc)
+            a, b = ri * ARGS.rows, (ri + 1) * ARGS.rows
+            x0, x1 = ci * ARGS.cols, (ci + 1) * ARGS.cols
+            c2, f2, b2 = ch[a:b, x0:x1], fg[a:b, x0:x1], bg[a:b, x0:x1]
             if c2.shape[0] < ARGS.rows:                # pad the last screen
                 padn = ARGS.rows - c2.shape[0]
                 pad = lambda arr, v: np.vstack(
                     [arr, np.full((padn, arr.shape[1]), v, np.uint8)])
                 c2, f2, b2 = pad(c2, 0x20), pad(f2, 7), pad(b2, 0)
+            if c2.shape[1] < ARGS.cols:                # pad a narrow last column
+                padw = ARGS.cols - c2.shape[1]
+                padh = lambda arr, v: np.hstack(
+                    [arr, np.full((arr.shape[0], padw), v, np.uint8)])
+                c2, f2, b2 = padh(c2, 0x20), padh(f2, 7), padh(b2, 0)
 
             ink = ((c2 != 0x20) & (c2 != 0x00)).mean()
             if ink < MIN_INK:
                 skipped += 1
                 continue
 
-            cap = describe(c2, sauce, stem, i, n)
+            cap = describe(c2, sauce, stem, i, nr * nc)
             if not cap:
                 skipped += 1
                 continue
@@ -176,7 +192,7 @@ def main():
                 img = img.resize((img.width * ARGS.upscale,
                                   img.height * ARGS.upscale), Image.NEAREST)
 
-            name = f"{stem}_{i:02d}"
+            name = f"{stem}_{i:03d}"
             img.save(os.path.join(imgdir, name + ".png"))
             with open(os.path.join(imgdir, name + ".txt"), "w",
                       encoding="utf-8") as fh:

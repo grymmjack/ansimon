@@ -321,3 +321,34 @@ It pre-fills everything already known — the SAUCE title and the auto-classifie
 piece type — and asks only for the imagery. `apply-captions.py` writes the
 results back, preserving the machine captions as `*.txt.auto` so an A/B against
 the automatic run stays possible.
+
+### Multi-artist datasets (`extract-artists.py`, `build-multi-artist.py`)
+
+`extract-artists.py` pulls named artists out of a 16colo.rs archive tree (year
+folders of pack `.zip`s), matching on the SAUCE author field with normalisation
+— the same person signs as "grymmjack", "grymmjack (gj!)" and "GrymmJack" across
+a decade — plus a filename-prefix fallback for files with no SAUCE. Every piece
+keeps artist/group/pack/year in `manifest.json`; that metadata is the weighting
+knob, not paperwork.
+
+`build-multi-artist.py` then does two things a single folder cannot:
+
+- **Weighting.** kohya's repeat count is per folder, so `4_grymmjack/` beside
+  `1_filth/` makes the primary ~43% of an epoch while eight other artists supply
+  compositional variety. Extracting a whole crew and training flat gives you a
+  "mid-90s scene" model, not one person's.
+- **Separate trigger words.** Other artists are captioned under their OWN
+  handle. Tagging their work with the primary's token would teach that token to
+  mean "any blockart", which is the opposite of the goal.
+
+Dedup is by parsed **cell grid**, not file bytes — the same piece ships in
+several packs with different SAUCE and line endings. Measured: a 112-piece
+personal backup and a 104-piece archive extract shared only 63, union 153.
+
+Two bugs worth not repeating, both silent:
+- **Uppercase `.ANS`.** The archive is DOS-era; a lowercase-only glob dropped 80
+  of one artist's 153 files and produced zero samples for three artists while
+  reporting success. All art globs are now case-insensitive.
+- **Non-80-column art.** A few artists worked at 160-200 columns. The builder now
+  splits horizontally as well as vertically, so every sample stays 640x384 and
+  `enable_bucket` can stay off.
