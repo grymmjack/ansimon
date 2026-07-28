@@ -30,8 +30,10 @@ network. Work is saved to localStorage as you go, so closing the tab is safe.
 import argparse
 import base64
 import glob
+import hashlib
 import html
 import json
+import re
 import os
 import sys
 
@@ -51,14 +53,23 @@ TEMPLATE = """<!doctype html>
     a full piece can be many screens tall, so the viewport scrolls and the img
     is clamped to it — otherwise the art runs off the bottom of the page with
     no way to reach it. */
- #viewport{flex:1;min-height:0;overflow:auto;background:#000;
-           border:1px solid #282828;display:flex;align-items:flex-start;
-           justify-content:center;padding:4px}
- #img{image-rendering:pixelated;display:block;flex:none}
- #img.fit{max-width:100%%;max-height:100%%;object-fit:contain}
+ #viewport{flex:1;min-height:0;overflow:auto;background:#000;box-sizing:border-box;
+           border:1px solid #282828;padding:4px;text-align:center;
+           scrollbar-width:auto;scrollbar-color:#4a9 #1a1a1a}
+ #viewport::-webkit-scrollbar{width:14px;height:14px}
+ #viewport::-webkit-scrollbar-track{background:#1a1a1a}
+ #viewport::-webkit-scrollbar-thumb{background:#4a9;border-radius:7px}
+ #viewport.cropped{border-color:#c84}
+ /* Fit uses width+height 100%% with object-fit, NOT max-width/max-height.
+    max-* only ever scales DOWN, so a 640px-wide piece in a 1700px viewport
+    would render at natural size — a postage stamp in a big black box. */
+ #img{image-rendering:pixelated;vertical-align:top}
+ #img.fit{display:block;width:100%%;height:100%%;object-fit:contain}
+ #img.zoom{display:inline-block;height:auto}
  #zoomrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
- #zoomrow button{padding:3px 9px;font-size:12px}
- #zoomrow button.on{background:#2e6f5e;border-color:#3a8a74}
+ #zoomrow button{padding:5px 13px;font-size:13px}
+ #zoomrow button.on{background:#2e6f5e;border-color:#6ecfb0;color:#fff;font-weight:700}
+ #clip{color:#eb9;font-weight:700}
  aside{width:340px;display:flex;flex-direction:column;gap:10px}
  label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#888}
  input,textarea,select{width:100%%;background:#1c1c1c;color:#eee;border:1px solid #333;
@@ -77,6 +88,8 @@ TEMPLATE = """<!doctype html>
 </style>
 <header>
   <b style="color:#c9c">ansimon</b>
+  <span class="hint" title="rebuild the page if this looks stale">b%(build)s</span>
+  <span style="color:#9c9;font-weight:700">%(scope_label)s</span>
   <span id="pos"></span>
   <div id="bar"><div id="fill"></div></div>
   <span id="count" class="done"></span>
@@ -84,7 +97,6 @@ TEMPLATE = """<!doctype html>
 </header>
 <main>
   <div id="stage">
-    <div id="viewport"><img id="img" class="fit" alt=""></div>
     <div id="zoomrow">
       <span class="hint">zoom</span>
       <button data-z="fit" class="on" onclick="setZoom('fit')">Fit</button>
@@ -92,12 +104,14 @@ TEMPLATE = """<!doctype html>
       <button data-z="2" onclick="setZoom(2)">2&times;</button>
       <button data-z="3" onclick="setZoom(3)">3&times;</button>
       <span class="hint" id="dims"></span>
+      <span id="clip"></span>
       <span class="hint" style="margin-left:auto">
         <kbd>Ctrl</kbd>+<kbd>Enter</kbd> save &amp; next &nbsp;
         <kbd>Ctrl</kbd>+<kbd>&larr;</kbd>/<kbd>&rarr;</kbd> move &nbsp;
         <kbd>Ctrl</kbd>+<kbd>S</kbd> skip &nbsp; <kbd>Ctrl</kbd>+<kbd>0..3</kbd> zoom
       </span>
     </div>
+    <div id="viewport"><img id="img" class="fit" alt=""></div>
   </div>
   <aside>
     <div class="known" id="known"></div>
@@ -128,20 +142,34 @@ TEMPLATE = """<!doctype html>
 <script>
 const DATA = %(data)s;
 const TOKEN = %(token)s;
-const KEY = 'ansimon-captions-' + DATA.length;
+const SCOPE = %(scope)s;
+const KEY = 'ansimon-captions-' + SCOPE + '-' + DATA.length;
 let caps = JSON.parse(localStorage.getItem(KEY) || '{}');
 let i = 0;
-let zoom = localStorage.getItem(KEY + '-zoom') || 'fit';
+// Zoom deliberately does NOT persist. It used to, keyed on the piece count —
+// which is identical between rebuilds, so a zoomed-in view survived every new
+// build and was indistinguishable from a broken page. Always start at Fit.
+let zoom = 'fit';
 
 const $ = id => document.getElementById(id);
 function setZoom(z){
   zoom = z;
-  localStorage.setItem(KEY + '-zoom', z);
   const img = $('img');
   document.querySelectorAll('#zoomrow button').forEach(b =>
     b.classList.toggle('on', b.dataset.z == String(z)));
-  if (z === 'fit'){ img.classList.add('fit'); img.style.width = ''; }
-  else { img.classList.remove('fit'); img.style.width = (img.naturalWidth * z) + 'px'; }
+  if (z === 'fit'){
+    img.classList.add('fit'); img.classList.remove('zoom'); img.style.width = '';
+  } else {
+    img.classList.remove('fit'); img.classList.add('zoom');
+    img.style.width = (img.naturalWidth * z) + 'px';
+  }
+  // An overflowing viewport looks exactly like a broken one, so say so.
+  requestAnimationFrame(() => {
+    const v = $('viewport');
+    const cut = v.scrollHeight > v.clientHeight + 2 || v.scrollWidth > v.clientWidth + 2;
+    v.classList.toggle('cropped', cut);
+    $('clip').textContent = cut ? '\u26a0 zoomed in \u2014 scroll, or hit Fit' : '';
+  });
 }
 function render(){
   const d = DATA[i];
@@ -215,6 +243,10 @@ def main():
     ap.add_argument("dataset", help="dataset dir built by build-lora-dataset.py")
     ap.add_argument("-o", "--out", default=None, help="output .html")
     ap.add_argument("--token", default="grymmjack")
+    ap.add_argument("--only", default=None, metavar="SUBSTR",
+                    help="only include folders matching this, e.g. grymmjack. "
+                         "A multi-artist dataset is sorted by folder, so without "
+                         "this your own work can sit hundreds of pieces deep.")
     ap.add_argument("--max-px", type=int, default=0,
                     help="downscale embedded images to this width (0 = as-is)")
     a = ap.parse_args()
@@ -222,8 +254,13 @@ def main():
     root = os.path.abspath(os.path.expanduser(a.dataset))
     imgs = sorted(glob.glob(os.path.join(root, "*", "*.png")) +
                   glob.glob(os.path.join(root, "*.png")))
+    if a.only:
+        want = a.only.lower()
+        imgs = [p for p in imgs
+                if want in os.path.basename(os.path.dirname(p)).lower()]
     if not imgs:
-        sys.exit(f"no .png found under {root}")
+        sys.exit(f"no .png found under {root}" +
+                 (f" matching --only {a.only!r}" if a.only else ""))
 
     # The manifest carries the SAUCE title and the auto-classified kind, so the
     # page can pre-fill everything already known and ask only for the imagery.
@@ -247,12 +284,26 @@ def main():
                      "title": html.escape(m.get("title", "")),
                      "group": html.escape(m.get("source", ""))})
 
-    out = a.out or os.path.join(root, "captions.html")
+    # The filename carries the build hash. Browsers cache file:// URLs hard —
+    # a 20 MB local page can survive Ctrl+Shift+R and even a devtools
+    # cache-disable — and a stale page is indistinguishable from a broken one.
+    # A new build is therefore a new URL, which no cache can get wrong.
+    build = hashlib.sha1((str(len(data)) + (a.only or "") + TEMPLATE)
+                         .encode()).hexdigest()[:6]
+    tag = re.sub(r"[^a-z0-9]+", "-", (a.only or "all").lower()).strip("-")
+    out = a.out or os.path.join(root, f"captions-{tag}-{build}.html")
     with open(out, "w", encoding="utf-8") as f:
         f.write(TEMPLATE % {"n": len(data), "data": json.dumps(data),
-                            "token": json.dumps(a.token)})
+                            "token": json.dumps(a.token),
+                            "scope": json.dumps(a.only or "all"),
+                            "scope_label": html.escape(a.only or "all artists"),
+                            "build": build})
+    for stale in glob.glob(os.path.join(root, f"captions-{tag}-*.html")):
+        if os.path.abspath(stale) != os.path.abspath(out):
+            os.remove(stale)                      # only ever one build present
     mb = os.path.getsize(out) / 1e6
     print(f"\n  {len(data)} pieces -> {out}  ({mb:.1f} MB, self-contained)")
+    print(f"  open:  file://{out}")
     print(f"  open it, caption, hit Export, then:")
     print(f"    python3 tools/apply-captions.py {root} ~/Downloads/captions.json\n")
 
