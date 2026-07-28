@@ -11,9 +11,14 @@ records authorship and there is no reason to throw that away.
 Matching an artist is fussier than string equality. The same person signs as
 "grymmjack", "grymmjack (gj!)", "grymmjack(gj!)" and "GrymmJack" across a
 decade, so names are normalised (lowercased, punctuation and parenthetical
-handles stripped) before comparison. Files with no SAUCE record fall back to a
-filename-prefix match, which is how scene artists have always signed their
-work: `gj-borg.ans`.
+handles stripped) before comparison.
+
+Attribution comes from SAUCE and nothing else. `--prefixes` exists for unsigned
+files but is OFF by default and should stay off: handles collide. One scene had
+both a "grymmjack" and a "Grimjack", each abbreviating to `gj-`, so a filename
+heuristic silently filed six of one artist's pieces under the other's name. A
+signature is evidence; a filename is a guess, and guesses do not belong in a
+dataset that trains on someone's identity.
 """
 import argparse
 import io
@@ -58,6 +63,13 @@ def main():
     ap.add_argument("--artists-file", default=None, help="one handle per line")
     ap.add_argument("--primary", default=None,
                     help="handle whose work is also copied to out/primary/")
+    ap.add_argument("--alias", action="append", default=[], metavar="NAME=P1|P2",
+                    help="substring patterns that also mean NAME, e.g. "
+                         "'grymmjack=grymm|gj!'. Matched against the raw "
+                         "lowercased SAUCE author, so it catches suffixed handles "
+                         "(gj![sac]) and collaborations (jinx && grymmjack) that "
+                         "exact matching misses. Be specific: 'gj' would also "
+                         "catch a different artist signing 'Gj/Avg'.")
     ap.add_argument("--prefixes", default="",
                     help="comma-separated filename prefixes to match when a file "
                          "has no SAUCE, e.g. 'gj-'")
@@ -76,6 +88,16 @@ def main():
     wanted = {}
     for n in names:
         wanted[norm(n)] = n
+
+    # {canonical name: [substring patterns]} tested against the raw author.
+    aliases = {}
+    for spec in a.alias:
+        nm, _, pats = spec.partition("=")
+        nm = nm.strip()
+        aliases[nm] = [p.strip().lower() for p in pats.split("|") if p.strip()]
+        if nm not in names:
+            names.append(nm)
+            wanted[norm(nm)] = nm
     prefixes = tuple(p.strip().lower() for p in a.prefixes.split(",") if p.strip())
 
     root = os.path.abspath(os.path.expanduser(a.archive))
@@ -117,11 +139,28 @@ def main():
                 continue
 
             s = read_sauce(data)
-            key = None
-            if s and s["author"]:
-                key = wanted.get(norm(s["author"]))
-            if key is None and prefixes and os.path.basename(nm).lower().startswith(prefixes):
+            signed = bool(s and s["author"].strip())
+            key = wanted.get(norm(s["author"])) if signed else None
+            matched_by = "sauce" if key else None
+            if key is None and signed:
+                # NB: not `nm` — that already holds the filename. Shadowing it
+                # here silently dropped every alias match at the extension check
+                # below, which looked exactly like the aliases never firing.
+                raw = s["author"].lower()
+                for alias_name, pats in aliases.items():
+                    if any(p in raw for p in pats):
+                        key, matched_by = alias_name, "alias"
+                        break
+
+            # The filename fallback ONLY applies to unsigned files. An explicit
+            # SAUCE author always wins — handles collide (one scene had both a
+            # "grymmjack" and a "Grimjack", both abbreviating to gj), so trusting
+            # a filename prefix over a signature quietly files one artist's work
+            # under another's name, which is the one thing this tool must not do.
+            if key is None and not signed and prefixes \
+                    and os.path.basename(nm).lower().startswith(prefixes):
                 key = wanted.get(norm(a.primary or names[0]))
+                matched_by = "prefix"
             if key is None:
                 continue
             if not nm.lower().endswith(WANT_EXT):
@@ -144,6 +183,7 @@ def main():
             rec = {"file": os.path.join(slug, base), "artist": key,
                    "sauce_author": s["author"] if s else "", "year": year,
                    "pack": pack, "orig": nm, "bytes": len(data),
+                   "matched_by": matched_by,
                    "title": s["title"] if s else "",
                    "group": s["group"] if s else "",
                    "cols": s["cols"] if s else 0, "rows": s["rows"] if s else 0}
@@ -156,7 +196,14 @@ def main():
     print(f"\n  {len(manifest)} pieces -> {out}\n")
     for k, v in sorted(per_artist.items(), key=lambda t: -t[1]):
         mark = "  <- primary" if a.primary and norm(k) == norm(a.primary) else ""
-        print(f"    {v:>5}  {k}{mark}")
+        pfx = sum(1 for r in manifest if r["artist"] == k and r["matched_by"] == "prefix")
+        als = sum(1 for r in manifest if r["artist"] == k and r["matched_by"] == "alias")
+        note = ""
+        if als:
+            note += f"   ({als} via alias)"
+        if pfx:
+            note += f"   ({pfx} unsigned, matched on filename)"
+        print(f"    {v:>5}  {k}{mark}{note}")
     print(f"\n  attribution kept in {os.path.join(out, 'manifest.json')}\n")
 
 
