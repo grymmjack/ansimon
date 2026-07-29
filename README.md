@@ -246,9 +246,29 @@ Two things worth knowing before you ship a deep-colour file:
   viewer's own 16 ANSI colours, and ansimon writes them in **SGR order**
   (1 = red, 4 = blue), not the VGA attribute order the rest of the codebase
   uses. Getting that backwards turns every red blue — see *Gotchas*.
-* **A custom palette belongs at `rgb`, not `256`.** `--depth rgb --palette
-  "Commodore 64"` writes those exact RGB values, so the colours are right in
-  any viewer that speaks the extension — no dependence on the viewer's table.
+* **A custom palette belongs at `rgb`, not `256`** — and needs
+  `--lock-palette` to take effect. Without it, `rgb` is unconstrained and
+  `--palette` only supplies the 16-colour SGR fallback.
+
+#### `--lock-palette` — a non-EGA palette that actually survives
+
+```bash
+ansimon "a knight" --truecolor --lock-palette --palette ENDESGA-64
+```
+
+This is the one combination that gets an artist's own palette into a `.ANS`
+intact. Every cell colour is snapped to the palette and then written as
+**literal RGB**, so nothing depends on the viewer's colour table — unlike an
+index, which means whatever the viewer decides it means.
+
+It uses the palette's **full length**, not the 16-entry version: 18 of the 58
+bundled palettes have more than 16 colours, up to `ATARI-8BIT` at 256 and `VGA`
+at 255. Locked to the 64-colour `ENDESGA-64`, the same test image scores 26.2
+error using 63 distinct colours — between plain 16 (34.5) and free `rgb` (6.6),
+which is exactly what a deliberate palette restriction should cost.
+
+`--lock-palette` is rgb-only and is refused elsewhere: at depth 16 the palette
+already *is* the constraint, and at 256 the colours belong to the viewer.
 
 ### `--from-ans` — read art ansimon didn't make
 

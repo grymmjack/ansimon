@@ -157,6 +157,8 @@ def print_help():
 {opt('', 'picked for SHAPE and the colours come out exact.')}
 {opt('', '.ans only — XBin has 4 bits of colour per cell.')}
 {opt('--truecolor', 'shorthand for --depth rgb')}
+{opt('--lock-palette', "at rgb depth, lock to --palette's exact RGB,")}
+{opt('', 'at its full length. How non-EGA palettes reach .ans.')}
 {opt('--rgb-dialect D', 'pablo (ESC[1;r;g;bt) | xterm (38;2)', 'pablo')}
 {opt('--shading LEVEL', 'none | light | medium | full', 'light')}
 {opt('--vga50', '8x8 cell instead of 8x16 (twice the rows)')}
@@ -443,7 +445,7 @@ def build_graph(a, seed, subject=None, server=None):
                           "ice_colors": a.ice, "dither": a.dither,
                           "dither_strength": a.dither_strength,
                           "colors": a.colors, "shading": a.shading,
-                          "depth": a.depth,
+                          "depth": a.depth, "lock_palette": a.lock_palette,
                           "cell_height": 8 if a.vga50 else 16,
                           "cell_width": 9 if a.font_9px else 8,
                           "smooth": a.smooth, "pixel_grid": a.pixel_grid,
@@ -800,6 +802,12 @@ def main():
                         "exact. default 16")
     p.add_argument("--truecolor", dest="depth", action="store_const", const="rgb",
                    help="shorthand for --depth rgb")
+    p.add_argument("--lock-palette", dest="lock_palette", action="store_true",
+                   help="at --depth rgb, restrict every colour to --palette's "
+                        "exact RGB values, using the palette's FULL length (not "
+                        "just 16). This is how a non-EGA palette reaches a .ans "
+                        "correctly: the file carries literal RGB, so it doesn't "
+                        "depend on the viewer's colour table.")
     p.add_argument("--rgb-dialect", dest="rgb_dialect", default="pablo",
                    choices=["pablo", "xterm"],
                    help="how 24-bit colour is written. 'pablo' is the scene "
@@ -965,6 +973,13 @@ def main():
             print(f"   {C['dim']}--depth {a.depth}: ignoring "
                   f"{', '.join(note)} — those work around the 16-colour "
                   f"palette, and there isn't one now{C['rst']}")
+
+    if a.lock_palette and a.depth != "rgb":
+        # At 16 the palette is always the constraint; at 256 the indices mean
+        # whatever the viewer's table says, so locking is not ours to do.
+        sys.exit(f"--lock-palette only applies to --depth rgb (got "
+                 f"{a.depth}). At depth 16 the palette already IS the "
+                 f"constraint; at 256 the colours are the viewer's, not ours.")
 
     # --- defaults that depend on --fast -----------------------------------
     if a.steps is None:

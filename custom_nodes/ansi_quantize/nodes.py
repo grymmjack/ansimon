@@ -42,7 +42,8 @@ from . import ansi as ansi_fmt
 from . import xbin as xbin_fmt
 from .cp437 import (CELL_H, CELL_W, CHARSETS, charset_indices, font,
                     glyph_bitmaps)
-from .palette import ALL_PALETTES, parse_palette, xterm256_palette
+from .palette import (ALL_PALETTES, parse_palette, parse_palette_full,
+                      xterm256_palette)
 
 _RESAMPLE = {"nearest": Image.NEAREST, "box (area average)": Image.BOX,
              "lanczos": Image.LANCZOS}
@@ -417,6 +418,12 @@ def match_cells_deep(patches, chars, depth="rgb", pal=None,
     Returns `(ch, fg, bg, cnt)`. At depth `rgb` the fg/bg arrays are (N, 3)
     uint8; at depth `256` they are (N,) indices into `pal`.
 
+    At depth `rgb`, `pal` is optional: pass None for unconstrained 24-bit, or a
+    colour list of ANY length to lock every cell to those exact RGB values. The
+    locked form is how a non-EGA palette reaches a `.ANS` correctly — the file
+    carries the literal RGB, so it does not depend on the viewer's table the way
+    an index would.
+
     The 256 path solves in free RGB and snaps the two winning colours
     afterwards, rather than searching every glyph against every palette entry —
     that search is an (N*G, 256) distance matrix, about 1.7 GB at 80x40. The
@@ -446,6 +453,14 @@ def match_cells_deep(patches, chars, depth="rgb", pal=None,
                 nearest_indices(fg_mean, pal).astype(np.uint8),
                 nearest_indices(bg_mean, pal).astype(np.uint8),
                 out_cnt)
+
+    if pal is not None:
+        # Palette-locked truecolor: snap to the palette, then emit the literal
+        # RGB rather than an index, so the colours survive any viewer.
+        pal = np.asarray(pal, np.float64)
+        out = pal.astype(np.uint8)
+        return (out_ch, out[nearest_indices(fg_mean, pal)],
+                out[nearest_indices(bg_mean, pal)], out_cnt)
 
     to8 = lambda a: np.clip(np.rint(a), 0, 255).astype(np.uint8)       # noqa: E731
     return out_ch, to8(fg_mean), to8(bg_mean), out_cnt
@@ -514,6 +529,7 @@ class AnsiQuantize:
                                               "max": 1.0, "step": 0.05}),
                 "colors": ("STRING", {"default": ""}),
                 "depth": (["16", "256", "rgb"], {"default": "16"}),
+                "lock_palette": ("BOOLEAN", {"default": False}),
                 "shading": (["none", "light", "medium", "full"],
                             {"default": "light"}),
                 "cell_height": ([16, 8], {"default": 16}),
@@ -538,7 +554,8 @@ class AnsiQuantize:
 
     def process(self, image, cols, rows, charset, palette,
                 ice_colors=True, dither=False, dither_strength=0.75,
-                colors="", depth="16", shading="light", cell_height=16, cell_width=8,
+                colors="", depth="16", lock_palette=False,
+                shading="light", cell_height=16, cell_width=8,
                 smooth="mode", pixel_grid=0,
                 snap_pixels=False, snap_colors=0, aspect="square", view_scale=1, scale=1,
                 resample="box (area average)", force_black_bg=False,
@@ -590,8 +607,16 @@ class AnsiQuantize:
             # diffusion, shade blends, --colors steering — has nothing left to
             # buy. Shades still get PICKED when they genuinely fit the pixels;
             # they just aren't forced in to fake a colour we can't name.
-            deep_pal = (np.asarray(xterm256_palette(pal.astype(np.uint8)),
-                                   np.float64) if depth == "256" else None)
+            if depth == "256":
+                deep_pal = np.asarray(xterm256_palette(pal.astype(np.uint8)),
+                                      np.float64)
+            elif lock_palette:
+                # The palette's FULL colour list, not the 16-entry version —
+                # nothing here is limited to 16 any more.
+                deep_pal = np.asarray(parse_palette_full(palette, custom_hex),
+                                      np.float64)
+            else:
+                deep_pal = None
             ch, fg, bg, cnt = match_cells_deep(patches, chars, depth=depth,
                                                pal=deep_pal,
                                                cell_h=cell_h, cell_w=cell_w)

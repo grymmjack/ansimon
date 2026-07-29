@@ -33,7 +33,8 @@ from ansi_quantize import ansi as A                              # noqa: E402
 from ansi_quantize.cp437 import charset_indices                  # noqa: E402
 from ansi_quantize.nodes import (match_cells, match_cells_deep,  # noqa: E402
                                  render_cells, render_cells_rgb, rgb_fallback)
-from ansi_quantize.palette import ANSI16, xterm256_palette       # noqa: E402
+from ansi_quantize.palette import (ANSI16, parse_palette_full,          # noqa: E402
+                                   xterm256_palette)
 
 PIXELVIEW = os.environ.get("PIXELVIEW") or os.path.expanduser(
     "~/git/pixel-viewer/target/release/pixelview")
@@ -65,18 +66,25 @@ def patches_of(arr):
                .reshape(ROWS * COLS, CELL_H * CELL_W, 3))
 
 
-def run(depth, dialect, chars, arr, tmp):
+def run(depth, dialect, chars, arr, tmp, lock=None):
+    """One (depth, dialect) case. `lock` is a palette to pin rgb colours to."""
     pal = np.asarray(ANSI16, np.float64)
     if depth == "16":
         ch, fg, bg, cnt, _ = match_cells(patches_of(arr), chars, pal, ice=True,
                                          shade_blend=False)
         rp = pal.astype(np.uint8)
     else:
-        # Pass a numpy array, because that is what the node passes. An earlier
-        # version of this test handed in a plain list and so never reached the
-        # `base16 or ANSI16` truth-test that raised on every real 256 render.
-        dp = (np.asarray(xterm256_palette(np.asarray(ANSI16, np.uint8)),
-                         np.float64) if depth == "256" else None)
+        if depth == "256":
+            # Pass a numpy array, because that is what the node passes. An
+            # earlier version of this test handed in a plain list and so never
+            # reached the `base16 or ANSI16` truth-test that raised on every
+            # real 256 render.
+            dp = np.asarray(xterm256_palette(np.asarray(ANSI16, np.uint8)),
+                            np.float64)
+        elif lock is not None:
+            dp = np.asarray(lock, np.float64)
+        else:
+            dp = None
         ch, fg, bg, cnt = match_cells_deep(patches_of(arr), chars,
                                            depth=depth, pal=dp)
         rp = None if depth == "rgb" else dp.astype(np.uint8)
@@ -93,7 +101,7 @@ def run(depth, dialect, chars, arr, tmp):
             else render_cells(ch, fg, bg, rp))
 
     fb = rgb_fallback(fg, bg, ANSI16, True) if depth == "rgb" else None
-    ans = os.path.join(tmp, f"d{depth}_{dialect}.ans")
+    ans = os.path.join(tmp, f"d{depth}_{dialect}{'_lock' if lock else ''}.ans")
     A.write_ans(ans, ch, fg, bg, ice=True, sauce=True, title="depth test",
                 author="grymmjack", depth=depth, dialect=dialect, fallback=fb)
 
@@ -127,11 +135,19 @@ def main():
     print(f"  {'depth':<14}{'differing px':>14}{'mean err':>11}"
           f"{'colours':>10}{'.ans':>10}")
     print("  " + "-" * 59)
+    # A >16-colour .GPL, locked, is the case that only depth rgb can express:
+    # a .ANS carrying an artist's own palette exactly, with no dependence on the
+    # viewer's colour table.
+    locked = parse_palette_full("ENDESGA-64")
+
     bad = 0
-    for depth, dialect in (("16", "-"), ("256", "-"),
-                           ("rgb", "pablo"), ("rgb", "xterm")):
-        res, why = run(depth, dialect, chars, arr, tmp)
+    for depth, dialect, lock in (("16", "-", None), ("256", "-", None),
+                                 ("rgb", "pablo", None), ("rgb", "xterm", None),
+                                 ("rgb", "pablo", locked)):
+        res, why = run(depth, dialect, chars, arr, tmp, lock)
         name = depth if dialect == "-" else f"{depth}/{dialect}"
+        if lock:
+            name = f"rgb/lock({len(lock)})"
         if why:
             print(f"  {name:<14}{'FAIL':>14}   {why}")
             bad += 1

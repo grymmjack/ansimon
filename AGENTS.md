@@ -74,10 +74,17 @@ emitting a pointless attribute change. So a parsed `.ans` will not match the
 source grid on `fg` where the glyph is blank — that is correct and saves real
 bytes. Compare `fg` only where the glyph has ink, or compare *renders*.
 
-**5. Colour index == ANSI attribute number.** Palettes are 16 entries in ANSI
-order (black, blue, green, cyan, red, magenta, brown, grey, then brights).
-Index 9 *means* "bright blue" to every viewer; a palette only changes the RGB it
-maps to. Reject palettes that aren't exactly 16.
+**5. Colour index == ANSI attribute number — wherever an index is written.**
+Palettes are 16 entries in ANSI order (black, blue, green, cyan, red, magenta,
+brown, grey, then brights). Index 9 *means* "bright blue" to every viewer; a
+palette only changes the RGB it maps to. `parse_palette` therefore pads or
+truncates to exactly 16.
+
+The exception is `--depth rgb --lock-palette`, which writes literal RGB and no
+index at all, so `parse_palette_full` returns the palette's real length (up to
+256). Use `parse_palette` when an index goes into the file and
+`parse_palette_full` only when RGB does — mixing them puts a 40th colour where
+a 4-bit field has to hold it.
 
 **6. Deep colour never reaches XBin.** `--depth 256` and `rgb` are `.ans` only.
 XBin's attribute byte is 4 bits of foreground and 4 of background, with no

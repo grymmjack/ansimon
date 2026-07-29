@@ -193,6 +193,27 @@ def parse_palette(name, custom_hex=""):
     return ALL_PALETTES[name]
 
 
+def parse_palette_full(name, custom_hex=""):
+    """Resolve a palette name to its FULL colour list, however long.
+
+    `parse_palette` pads or truncates to the 16 ANSI attributes, because that is
+    all a `.ANS` attribute or an XBin cell can address. Deep colour has no such
+    limit: at `--depth rgb` every cell carries its own 24-bit pair, so a
+    64-entry or 256-entry .GPL can be used exactly as the artist drew it. This
+    is what `ALL_PALETTES_FULL` was built for.
+    """
+    if name == "Custom":
+        toks = custom_hex.replace(",", " ").split()
+        cols = [hex_to_rgb(t) for t in toks]
+        if not cols:
+            raise ValueError("Custom palette is empty")
+        return cols
+    if name not in ALL_PALETTES_FULL:
+        raise ValueError(f"unknown palette {name!r} — have: "
+                         f"{', '.join(ALL_PALETTES_FULL)}")
+    return list(ALL_PALETTES_FULL[name])
+
+
 def palette_size(name):
     """How many colours the source .GPL actually had (before padding to 16)."""
     return len(ALL_PALETTES_FULL.get(name, ()))
