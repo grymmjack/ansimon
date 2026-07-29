@@ -38,7 +38,12 @@ import struct
 
 import numpy as np
 
-CELL_W, CELL_H = 8, 16
+CELL_W, CELL_H = 8, 16          # the default cell; 8x8 (VGA50) is also supported
+
+# Cell height is a runtime property, not a constant. A VGA 80x25 screen uses an
+# 8x16 cell; 80x50 uses 8x8 — same pixels, twice the rows. Everything that
+# slices an image into cells must ask, not assume.
+SUPPORTED_HEIGHTS = (16, 8)
 
 # ---------------------------------------------------------------------------
 # CP437 -> Unicode. Index = the byte you'd write into a .ANS file.
@@ -280,33 +285,45 @@ _CACHE = {}
 # real VGA upper half block covers rows 0-6 and the lower half rows 7-15: seven
 # and nine, not eight and eight. Getting that wrong put a one-pixel error in
 # nearly every half-block cell, and 111 glyphs in total disagreed with the font.
-_FONT_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vga8x16.bin")
+_FONT_DIR = os.path.dirname(os.path.abspath(__file__))
+_FONT_BIN = os.path.join(_FONT_DIR, "vga8x16.bin")      # kept for --doctor
 
 
-def _embedded_font():
-    """The extracted VGA font as (256,16,8) bool, or None if absent."""
-    if not os.path.exists(_FONT_BIN):
+def font_path(height=CELL_H):
+    return os.path.join(_FONT_DIR, f"vga8x{height}.bin")
+
+
+def _embedded_font(height=CELL_H):
+    """The extracted VGA font as (256,height,8) bool, or None if absent."""
+    p = font_path(height)
+    if not os.path.exists(p):
         return None
-    raw = np.fromfile(_FONT_BIN, np.uint8)
-    if raw.size != 256 * 16:
+    raw = np.fromfile(p, np.uint8)
+    if raw.size != 256 * height:
         return None
-    return np.unpackbits(raw).reshape(256, 16, 8).astype(bool)
+    return np.unpackbits(raw).reshape(256, height, 8).astype(bool)
 
 
-def glyph_bitmaps():
+def glyph_bitmaps(height=CELL_H):
     """(256, 16, 8) bool array — glyph_bitmaps()[c] is CP437 char `c`.
 
     Built once and cached. Geometric glyphs are generated and OVERRIDE any
     font-supplied version, so shades and half blocks are always pixel-exact
     regardless of which console font happened to be installed.
     """
-    if "bitmaps" in _CACHE:
-        return _CACHE["bitmaps"]
+    key = f"bitmaps{height}"
+    if key in _CACHE:
+        return _CACHE[key]
 
-    font = _embedded_font()
+    font = _embedded_font(height)
     if font is not None:
-        _CACHE["bitmaps"] = font
+        _CACHE[key] = font
         return font
+    if height != CELL_H:
+        raise FileNotFoundError(
+            f"no {CELL_W}x{height} font at {font_path(height)}.\n"
+            f"  Extract one the same way as the 8x16:  "
+            f"python3 tools/extract-font.py --height {height}")
 
     table = np.zeros((256, CELL_H, CELL_W), bool)
     glyphs, uni = _psf_source()
@@ -338,6 +355,11 @@ def glyph_bitmaps():
 
     _CACHE["bitmaps"] = table
     return table
+
+
+def cell_height():
+    """Height of the font actually available, in pixels."""
+    return CELL_H if _embedded_font(CELL_H) is not None else CELL_H
 
 
 def coverage():

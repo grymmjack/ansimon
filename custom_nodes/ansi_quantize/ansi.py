@@ -111,6 +111,13 @@ def to_ans(ch, fg, bg, ice=False, width=None, trim_trailing=True):
     foreground *off* needs a full reset (`ESC[0m`) — there is no "unbold" in
     the ANSI.SYS dialect these files target — so we reset and re-issue rather
     than trying to diff attribute-by-attribute.
+
+    A row that fills the full width gets NO line ending. The terminal wraps by
+    itself at the last column, so an explicit CRLF on top of that advances a
+    second time and leaves a blank row. Get this wrong and a piece whose rows
+    are all full-width comes out at double height — which is what happened
+    here, and it is invisible unless you render the .ans with something other
+    than your own code.
     """
     ch = np.asarray(ch, np.uint8)
     fg = np.asarray(fg, np.uint8)
@@ -120,6 +127,31 @@ def to_ans(ch, fg, bg, ice=False, width=None, trim_trailing=True):
 
     out = bytearray()
     cur = None                                   # currently-active (fg, bg)
+
+    # A full-width FINAL row is the one case auto-wrap cannot express. Writing
+    # its last column leaves the terminal in a pending wrap, and a renderer
+    # that resolves that eagerly gains a phantom blank row at the bottom.
+    # Nothing emitted afterwards fixes it — not CR, not a reset — because the
+    # wrap already happened. So write that last cell FIRST, by absolute
+    # position, then draw the rest of the row; the final character printed is
+    # then at column cols-1 and no wrap is pending.
+    last_cell = None
+    if rows and cols:
+        lr = ch[rows - 1]
+        end_last = cols
+        if trim_trailing:
+            while end_last > 0 and lr[end_last - 1] in (0x00, 0x20) \
+                    and bg[rows - 1][end_last - 1] == 0:
+                end_last -= 1
+        if end_last == cols:
+            c = int(lr[cols - 1]) or 0x20
+            f, b = int(fg[rows - 1][cols - 1]), int(bg[rows - 1][cols - 1])
+            out += f"{ESC}[{rows};{cols}H".encode("ascii")
+            out += _sgr(f, b, ice).encode("ascii")
+            out.append(c)
+            out += f"{ESC}[H".encode("ascii")
+            cur = (f, b)
+            last_cell = (rows - 1, cols - 1)
 
     for y in range(rows):
         row_ch, row_fg, row_bg = ch[y], fg[y], bg[y]
@@ -132,6 +164,9 @@ def to_ans(ch, fg, bg, ice=False, width=None, trim_trailing=True):
                 end -= 1
 
         for x in range(end):
+            if last_cell == (y, x):
+                break                            # already placed, and printing
+                                                 # it again would re-arm the wrap
             c, f, b = int(row_ch[x]), int(row_fg[x]), int(row_bg[x])
             if c == 0x00:
                 c = 0x20                          # never write a raw NUL
@@ -146,7 +181,9 @@ def to_ans(ch, fg, bg, ice=False, width=None, trim_trailing=True):
                 cur = (f, b)
             out.append(c)
 
-        if y != rows - 1:
+        # end < cols means the row stopped short, so it needs an explicit
+        # newline; end == cols means the terminal already wrapped for us.
+        if y != rows - 1 and end < cols:
             out += b"\r\n"
 
     out += f"{ESC}[0m".encode("ascii")

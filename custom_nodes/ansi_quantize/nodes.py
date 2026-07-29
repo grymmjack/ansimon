@@ -201,7 +201,7 @@ def _score(st, pal, n_bg, rows_slice=None, bias=None):
     return err, fg_idx, bg_idx
 
 
-def shade_blends(pal, n_bg, shades=(0xB0, 0xB1, 0xB2)):
+def shade_blends(pal, n_bg, shades=(0xB0, 0xB1, 0xB2), allow=None):
     """Every colour a shade character can produce -> (blend_rgb, glyph, fg, bg).
 
     This is how ANSI actually dithers. `0xB0 0xB1 0xB2` cover 25/50/75% of the
@@ -215,21 +215,42 @@ def shade_blends(pal, n_bg, shades=(0xB0, 0xB1, 0xB2)):
     same entry, so the shade renders solid. The blends have to be enumerated.
     """
     cov = {0xB0: 0.25, 0xB1: 0.50, 0xB2: 0.75}
+    ok = set(range(16)) if not allow else set(allow)
     out_rgb, out_meta = [], []
     for g in shades:
         c = cov[g]
         for f in range(16):
+            if f not in ok:
+                continue
             for b in range(n_bg):
-                if f == b:
+                if f == b or b not in ok:
                     continue                      # renders solid; already covered
                 out_rgb.append(c * pal[f] + (1.0 - c) * pal[b])
                 out_meta.append((g, f, b))
     return np.asarray(out_rgb), out_meta
 
 
+def parse_colors(spec):
+    """'3,8,15,11' -> sorted tuple of palette indices, or None for all 16."""
+    if not spec or not str(spec).strip():
+        return None
+    out = set()
+    for tok in str(spec).replace(",", " ").split():
+        try:
+            v = int(tok, 0)
+        except ValueError:
+            raise ValueError(f"--colors: {tok!r} is not a palette index 0-15")
+        if not 0 <= v <= 15:
+            raise ValueError(f"--colors: {v} out of range (0-15)")
+        out.add(v)
+    if 0 not in out:
+        out.add(0)          # black is the canvas; without it nothing can be empty
+    return tuple(sorted(out))
+
+
 def match_cells(patches, chars, pal, ice=False, dither=False, cols=None,
                 strength=0.75, clamp=64.0, portable_bias=0.5, shade_blend=True,
-                shade_bias=0.10):
+                shade_bias=0.10, allow=None):
     """Choose (char, fg, bg) for every cell.
 
     `patches` is (N, CELL_H*CELL_W, 3) float in 0-255, `chars` the allowed
@@ -255,6 +276,16 @@ def match_cells(patches, chars, pal, ice=False, dither=False, cols=None,
     n_bg = 16 if ice else 8
     chars = np.asarray(chars)
 
+    # Restricting the palette is done by pushing the disallowed entries far
+    # away in colour space rather than by reindexing, so every downstream
+    # index still means what it means in a .ANS file. A picked colour is
+    # always a real ANSI attribute, just never one you excluded.
+    if allow:
+        keep = np.zeros(16, bool)
+        keep[list(allow)] = True
+        pal = pal.copy()
+        pal[~keep] = 1e6
+
     # Scale the tie-break to the error units in play (sum of squared channel
     # error over 128 pixels), so it only ever decides genuine ties.
     tie = portable_bias * st.p
@@ -276,7 +307,7 @@ def match_cells(patches, chars, pal, ice=False, dither=False, cols=None,
             # the CELL MEAN, because at 8x16 px the eye integrates the cell —
             # which is exactly why a dither reads as an intermediate tone
             # rather than as a pattern.
-            blends, meta = shade_blends(pal, n_bg)
+            blends, meta = shade_blends(pal, n_bg, allow=allow)
             mean = st.s_total / st.p                              # (N,3)
             bi = nearest_indices(mean, blends)                    # (N,)
             cand = blends[bi]
@@ -380,6 +411,9 @@ class AnsiQuantize:
                 "dither": ("BOOLEAN", {"default": False}),
                 "dither_strength": ("FLOAT", {"default": 0.75, "min": 0.0,
                                               "max": 1.0, "step": 0.05}),
+                "colors": ("STRING", {"default": ""}),
+                "shading": (["none", "light", "medium", "full"],
+                            {"default": "light"}),
                 "smooth": (["mode", "median", "none"], {"default": "mode"}),
                 "pixel_grid": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 8}),
                 "snap_pixels": ("BOOLEAN", {"default": False}),
@@ -400,6 +434,7 @@ class AnsiQuantize:
 
     def process(self, image, cols, rows, charset, palette,
                 ice_colors=True, dither=False, dither_strength=0.75,
+                colors="", shading="light",
                 smooth="mode", pixel_grid=0,
                 snap_pixels=False, snap_colors=0, aspect="square", view_scale=1, scale=1,
                 resample="box (area average)", force_black_bg=False,
@@ -430,9 +465,15 @@ class AnsiQuantize:
         patches = (arr.reshape(rows, CELL_H, cols, CELL_W, 3)
                       .transpose(0, 2, 1, 3, 4)
                       .reshape(rows * cols, CELL_H * CELL_W, 3))
+        # How eagerly a shade blend may displace a solid pick. Tuned against a
+        # real corpus, which sits near 10% shade characters: bias 1.0 gave 75%
+        # (the whole canvas dithered), 0.35 gave 54%.
+        bias = {"none": 0.0, "light": 0.10, "medium": 0.35, "full": 1.0}[shading]
         ch, fg, bg, cnt, _ = match_cells(patches, chars, pal, ice=ice_colors,
                                          dither=dither, cols=cols,
-                                         strength=dither_strength)
+                                         strength=dither_strength,
+                                         shade_blend=bias > 0, shade_bias=bias,
+                                         allow=parse_colors(colors))
 
         ch = ch.reshape(rows, cols).astype(np.uint8)
         fg = fg.reshape(rows, cols).astype(np.uint8)

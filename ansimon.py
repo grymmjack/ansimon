@@ -151,6 +151,8 @@ def print_help():
 {opt('--dither / --no-dither', 'cell-level error diffusion', 'off')}
 {opt('--dither-strength N', 'damping, 0-1. lower = less colour noise', '0.75')}
 {opt('--ice / --no-ice', 'iCE colours: 16 backgrounds, no blink', 'on')}
+{opt('--colors LIST', "restrict palette, e.g. '3,8,15,11'")}
+{opt('--shading LEVEL', 'none | light | medium | full', 'light')}
 {opt('--black-bg', 'pin every background to black (BBS look)')}
 {opt('--negative TEXT', 'override the default negative prompt')}
 
@@ -431,6 +433,7 @@ def build_graph(a, seed, subject=None, server=None):
                           "charset": a.charset, "palette": a.palette,
                           "ice_colors": a.ice, "dither": a.dither,
                           "dither_strength": a.dither_strength,
+                          "colors": a.colors, "shading": a.shading,
                           "smooth": a.smooth, "pixel_grid": a.pixel_grid,
                           "snap_pixels": a.snap_pixels, "snap_colors": a.snap_colors,
                           "aspect": ("classic (4:3)" if a.aspect.startswith("c")
@@ -725,6 +728,15 @@ def main():
                    help="iCE colours: 16 backgrounds, no blink (default on)")
     p.add_argument("--no-ice", dest="ice", action="store_false",
                    help="classic 8 backgrounds + blink bit")
+    p.add_argument("--colors", default="",
+                   help="restrict the palette to these ANSI indices, e.g. "
+                        "'3,8,15,11' for cyan/grey/white/bright-cyan. Black (0) "
+                        "is always kept as the canvas. Great for locking a whole "
+                        "tileset to one scheme.")
+    p.add_argument("--shading", default="light",
+                   choices=["none", "light", "medium", "full"],
+                   help="how eagerly the shade characters may blend two colours "
+                        "into an intermediate tone. default light")
     p.add_argument("--black-bg", dest="black_bg", action="store_true",
                    help="pin every background to black")
     p.add_argument("--steps", type=int, default=None, help="sampling steps. default 30")

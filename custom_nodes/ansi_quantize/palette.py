@@ -52,7 +52,16 @@ BUILTIN = {
 }
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Palettes are searched in the bundled gpl/ folder, then anywhere on
+# $ANSIMON_PALETTES (a colon-separated list), then a couple of conventional
+# spots. Drop a .GPL in any of them and it becomes selectable.
 GPL_DIR = os.path.join(_HERE, "gpl")
+_EXTRA = [p for p in os.environ.get("ANSIMON_PALETTES", "").split(":") if p]
+GPL_DIRS = [GPL_DIR] + _EXTRA + [
+    os.path.expanduser("~/git/DRAW/ASSETS/PALETTES"),
+    os.path.expanduser("~/.config/ansimon/palettes"),
+]
 
 
 def hex_to_rgb(h):
@@ -83,6 +92,17 @@ def _parse_gpl(path):
 
 
 def _load_gpl_dir(directory):
+    """Load every .GPL in `directory` -> {name: [(r,g,b), ...]}.
+
+    Palettes with FEWER than 16 entries are kept and padded by repeating the
+    last colour. A 4-colour CGA set is a perfectly good target — it just means
+    several ANSI indices resolve to the same RGB, which is exactly what those
+    machines did. Rejecting them would throw away most of a real collection:
+    of 55 palettes here, 21 have fewer than 16 colours.
+
+    More than 16 are truncated for the 16-colour path; the full list is kept
+    under `ALL_PALETTES_FULL` for the 256-colour mode.
+    """
     out = {}
     if not os.path.isdir(directory):
         return out
@@ -91,12 +111,28 @@ def _load_gpl_dir(directory):
             continue
         name = re.sub(r"\s*\(\d+\)\s*$", "", os.path.splitext(fn)[0]).strip()
         cols = _parse_gpl(os.path.join(directory, fn))
-        if len(cols) >= 16:
-            out[name] = cols[:16]
+        if cols:
+            out[name] = cols
     return dict(sorted(out.items()))
 
 
-ALL_PALETTES = {**BUILTIN, **_load_gpl_dir(GPL_DIR)}
+def _to16(cols):
+    """Any palette -> exactly 16 entries, padding short ones by repetition."""
+    cols = list(cols)[:16]
+    while len(cols) < 16:
+        cols.append(cols[-1])
+    return cols
+
+
+_FOUND = {}
+for _d in GPL_DIRS:
+    for _k, _v in _load_gpl_dir(_d).items():
+        _FOUND.setdefault(_k, _v)          # earlier directories win
+
+# Full-precision palettes (any length) for the 256-colour path.
+ALL_PALETTES_FULL = {**{k: list(v) for k, v in BUILTIN.items()}, **_FOUND}
+# 16-entry versions for .ANS / XBin, which have exactly 16 attributes.
+ALL_PALETTES = {**BUILTIN, **{k: _to16(v) for k, v in _FOUND.items()}}
 
 
 def parse_palette(name, custom_hex=""):
@@ -111,3 +147,8 @@ def parse_palette(name, custom_hex=""):
     if name not in ALL_PALETTES:
         raise ValueError(f"unknown palette {name!r} — have: {', '.join(ALL_PALETTES)}")
     return ALL_PALETTES[name]
+
+
+def palette_size(name):
+    """How many colours the source .GPL actually had (before padding to 16)."""
+    return len(ALL_PALETTES_FULL.get(name, ()))
