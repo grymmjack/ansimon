@@ -1,0 +1,22 @@
+{
+  "_note": "Trigger words per LoRA, keyed by filename stem (no .safetensors).",
+  "_why": "A LoRA only activates properly when the prompt contains the token it was captioned with, and every ANSI LoRA in the wild picked a different one. ansimon used to hardcode 'ansiart', which is right for ansi-art-xl and wrong for everything else — comparing LoRAs with the wrong trigger measures the base model, not the LoRA. `trigger` is prepended to the subject; \"\" means the LoRA needs none. `base` is the architecture it requires, and `--lora` refuses a mismatched --base.",
+  "_source": "civitai /api/v1/model-versions/<id> trainedWords, verified at download time.",
+  "_adding": "Drop the .safetensors in ComfyUI/models/loras and add an entry here. Without one, ansimon falls back to the --lora name's own stem being trigger-free and warns once.",
+
+  "ansi-art-xl":         {"trigger": "ansiart",        "base": "SDXL",  "civitai": 185538,  "note": "the default; ANSI Art Style XL"},
+  "ansi-ansii-xl":       {"trigger": "ral-ansrt",      "base": "SDXL",  "civitai": 911174,  "note": "ANSII Art Style [SDXL]"},
+  "ansi-art-15":         {"trigger": "ansiart",        "base": "SD1.5", "civitai": 184782,  "note": "needs --base v1-5-pruned-emaonly"},
+  "ascii-art-xl":        {"trigger": "",               "base": "SDXL",  "civitai": 922455,  "note": "ASCII ART [SD XL LoRA]; no trigger word"},
+  "teletext-page-xl":    {"trigger": "teletext page",  "base": "SDXL",  "civitai": 187302,  "note": "Teletext Page"},
+  "teletext-vidiot-xl":  {"trigger": "teletext",       "base": "SDXL",  "civitai": 258943,  "note": "The Vidiot Teletext Style"},
+  "teletext-vidiot2-xl": {"trigger": "",               "base": "SDXL",  "civitai": 267261,  "note": "Vidiot Teletext 2; no trigger word"},
+  "teletext-screens-xl": {"trigger": "p1x3lt3xt",      "base": "SDXL",  "civitai": 819205,  "note": "Teletext & Pixel Screens SDXL"},
+  "zxspectrum-xl":       {"trigger": "zxspectrum syle", "base": "SDXL", "civitai": 285232,  "note": "trigger is misspelled upstream ('syle') — kept verbatim, because that is the token it was trained on"},
+
+  "dosegafx":            {"trigger": "dosegafx",       "base": "SDXL",  "note": "pre-existing local LoRA; trigger inferred from the name"},
+  "dosegafx-v1":         {"trigger": "dosegafx",       "base": "SDXL",  "note": "pre-existing local LoRA"},
+
+  "grymmjack-15":        {"trigger": "",               "base": "SD1.5", "note": "trained here; use --raw-prompt, and --base v1-5-pruned-emaonly"},
+  "grymmjack-v2":        {"trigger": "",               "base": "SD1.5", "note": "trained here; use --raw-prompt"}
+}

@@ -195,9 +195,37 @@ Great for iterating; also means a "fast" run may not have re-sampled at all.
 - `servers.json` is gitignored — it holds private LAN addresses. Only ever commit
   `servers.example.json`.
 
+## LoRAs: two things that silently ruin a comparison
+
+**A LoRA belongs to one architecture.** SD1.5 cross-attention is 768 wide,
+SDXL's is 2048, and SDXL has a second text encoder SD1.5 LoRAs have no weights
+for. Mixing them does not fail cleanly — it dies inside ComfyUI's weight patcher
+or samples an image that ignores the LoRA entirely. `model_arch()` reads the
+safetensors header (positive evidence only: `conditioner.embedders.1` for SDXL,
+`cond_stage_model.transformer` for SD1.5) and the CLI refuses a mismatch. Do
+**not** widen that to a "is 2048 in any shape" test — this box also holds Stable
+Audio and ACE-Step checkpoints, and that heuristic labels them SDXL.
+
+**Each LoRA has its own trigger word.** `ansiart`, `ral-ansrt`, `p1x3lt3xt`,
+`teletext page` — no two agree. ansimon hardcoded `ansiart` for a long time,
+which is correct for exactly one installed LoRA; every other comparison was
+really measuring the base model with a stray token in the prompt. Triggers live
+in `loras.json`, keyed by filename stem. `lora_trigger()` distinguishes `""`
+("needs none, and we know") from `None` ("no entry — fall back to `ansiart` and
+show `?` in `--list-loras`"), and that distinction is the point: an unknown LoRA
+should be visibly unknown, not silently defaulted.
+
+One entry is misspelled on purpose (`zxspectrum syle`). The typo is the token
+the LoRA was trained on; fixing it would break the LoRA.
+
 ## Known gaps
 
 - No automated test suite (the snippet above is what there is).
+- Four Civitai LoRAs are login-gated (HTTP 401) and need an API token that has
+  not been supplied: versions 1301263, 2654031, 1425501, 714723.
+- `--lora-strength` is 0.9 for everything. Each third-party LoRA really wants
+  its own value, so cross-LoRA comparisons at a single strength rank them only
+  roughly.
 - `--from-ans` is verified on 112 files; `ESC[s`/`u`, `ESC[K` and 512-char fonts
   are implemented but untested against real art that uses them.
 - Multi-GPU farm execution is unverified end-to-end; dispatch and graceful

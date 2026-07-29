@@ -64,6 +64,33 @@ try:
 except Exception:
     STYLES = {}
 
+# Per-LoRA trigger words, loaded from loras.json next to this script.
+# {stem: {"trigger": "...", "base": "SDXL"|"SD1.5", ...}}
+#
+# A LoRA only fires properly when the prompt contains the token it was captioned
+# with, and every ANSI LoRA in the wild chose a different one — ansiart,
+# ral-ansrt, p1x3lt3xt, "teletext page". ansimon used to hardcode "ansiart",
+# which is correct for exactly one of them, so comparing LoRAs was really
+# comparing the base model with a stray token in the prompt.
+try:
+    with open(os.path.join(_SCRIPT_DIR, "loras.json"), encoding="utf-8") as _lf:
+        LORAS = {k: v for k, v in json.load(_lf).items() if not k.startswith("_")}
+except Exception:
+    LORAS = {}
+
+
+def lora_trigger(lora_name):
+    """The trigger token for a LoRA filename, or None if we have no entry.
+
+    None and "" mean different things: "" is "this LoRA needs no trigger, and we
+    know that", while None is "unknown, fall back to the historical default".
+    """
+    stem = os.path.splitext(os.path.basename(lora_name or ""))[0]
+    if stem in LORAS:
+        return LORAS[stem].get("trigger", "")
+    return None
+
+
 # Named ComfyUI targets for `--server NAME`. Your personal servers.json (gitignored)
 # is loaded if present; otherwise just the built-in 'local'. Copy servers.example.json
 # to servers.json and add your machines, e.g. {"titan": "http://192.168.1.20:8188"}.
@@ -246,6 +273,136 @@ def print_styles():
     print()
 
 
+# ---------------------------------------------------------------------------
+# Model plumbing: short names, and refusing to mix architectures.
+#
+# A LoRA is trained against one base architecture and is meaningless against
+# another — SD1.5 cross-attention is 768-wide, SDXL's is 2048, and SDXL carries
+# a second text encoder that SD1.5 LoRAs have no weights for. Handing ComfyUI a
+# mismatched pair does not fail cleanly; you get a stack trace deep in the
+# weight patcher, or worse, a picture that samples but ignores the LoRA. This
+# matters here because the ANSI LoRAs in the wild are split across SDXL, SD1.5,
+# Flux and ZImage, and grymmjack's own trained ones are SD1.5 while the default
+# base is SDXL. So detect both sides and say so up front.
+# ---------------------------------------------------------------------------
+_ARCH_CACHE = {}
+
+
+def _safetensors_keys(path):
+    """Read just the header of a .safetensors file -> (key list, metadata)."""
+    import struct
+    with open(path, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        hdr = json.loads(f.read(n))
+    return [k for k in hdr if k != "__metadata__"], hdr.get("__metadata__", {}), hdr
+
+
+def model_arch(path):
+    """'SDXL' | 'SD1.5' | '?' for a checkpoint or LoRA, from its header alone."""
+    path = os.path.abspath(path)
+    if path in _ARCH_CACHE:
+        return _ARCH_CACHE[path]
+    arch = "?"
+    try:
+        keys, md, hdr = _safetensors_keys(path)
+        base = (md.get("ss_base_model_version") or "").lower()
+        if "xl" in base:
+            arch = "SDXL"
+        elif base.startswith("sd_v1") or "sd1" in base:
+            arch = "SD1.5"
+        if arch == "?":
+            # SDXL has a SECOND text encoder; SD1.5 has one. That difference is
+            # decisive AND unique to image models, which is what we need: this
+            # box also holds Stable Audio and ACE-Step checkpoints for soundmon,
+            # and a bare "is 2048 anywhere in the shapes" test happily labels
+            # those SDXL. Positive evidence only, and "?" when there is none.
+            if any(("te2" in k) or ("text_encoder_2" in k)
+                   or ("conditioner.embedders.1" in k) for k in keys):
+                arch = "SDXL"
+            elif any("cond_stage_model.transformer" in k for k in keys):
+                arch = "SD1.5"
+            elif any(k.startswith(("lora_", "lycoris_")) for k in keys):
+                # A LoRA with one text encoder: fall back on the cross-attention
+                # width, which is 2048 for SDXL and 768 for SD1.5.
+                flat = {(hdr[k].get("shape") or [None])[-1] for k in keys[:600]}
+                arch = "SDXL" if 2048 in flat else ("SD1.5" if 768 in flat else "?")
+    except Exception:
+        pass
+    _ARCH_CACHE[path] = arch
+    return arch
+
+
+def _model_dir(kind):
+    return os.path.join(COMFY, "models", kind)
+
+
+def resolve_model(name, kind):
+    """Accept a short name for a checkpoint/LoRA and return the real filename.
+
+    `--lora teletext-vidiot-xl` is nicer to type than the full
+    `teletext-vidiot-xl.safetensors`, and once a dozen LoRAs are installed the
+    difference matters. Exact filename always wins, so nothing that worked
+    before changes meaning.
+    """
+    if not name:
+        return name
+    d = _model_dir(kind)
+    if os.path.exists(os.path.join(d, name)):
+        return name
+    try:
+        have = [f for f in os.listdir(d) if f.endswith((".safetensors", ".ckpt"))]
+    except OSError:
+        return name
+    stem = name.lower().removesuffix(".safetensors").removesuffix(".ckpt")
+    exact = [f for f in have if f.lower().removesuffix(".safetensors")
+             .removesuffix(".ckpt") == stem]
+    if exact:
+        return exact[0]
+    part = [f for f in have if stem in f.lower()]
+    if len(part) == 1:
+        return part[0]
+    if len(part) > 1:
+        sys.exit(f"--{'lora' if kind == 'loras' else 'base'} {name!r} is "
+                 f"ambiguous: {', '.join(sorted(part))}")
+    sys.exit(f"no {kind[:-1]} matching {name!r} in {d}\n"
+             f"  have: {', '.join(sorted(have)) or '(none)'}")
+
+
+def print_loras():
+    """Every installed LoRA with the architecture it needs."""
+    d = _model_dir("loras")
+    files = sorted(f for f in os.listdir(d) if f.endswith(".safetensors")) \
+        if os.path.isdir(d) else []
+    print(f"\n{C['b']}installed LoRAs{C['rst']}  {C['dim']}({d}){C['rst']}\n")
+    if not files:
+        print("  (none)\n")
+        return
+    base_arch = {}
+    for f in sorted(os.listdir(_model_dir("checkpoints"))
+                    if os.path.isdir(_model_dir("checkpoints")) else []):
+        if f.endswith(".safetensors"):
+            base_arch.setdefault(model_arch(os.path.join(_model_dir("checkpoints"), f)),
+                                 []).append(f)
+    print(f"  {'name':<26}{'needs':<7}{'size':>8}   {'trigger':<18}")
+    print("  " + "-" * 62)
+    for f in files:
+        p = os.path.join(d, f)
+        stem = f.removesuffix(".safetensors")
+        trig = lora_trigger(f)
+        shown = ("-" if trig == "" else trig) if trig is not None \
+            else f"{C['yel']}?{C['rst']}"
+        print(f"  {stem:<26}{model_arch(p):<7}"
+              f"{os.path.getsize(p) / 1048576:>6.0f} MB   {shown:<18}")
+    print(f"\n  {C['dim']}--lora takes any of these, with or without "
+          f".safetensors{C['rst']}")
+    for arch, names in sorted(base_arch.items()):
+        if arch == "?":
+            continue          # soundmon's audio checkpoints; not image bases
+        print(f"  {C['dim']}{arch:<6} base available: "
+              f"{', '.join(n.removesuffix('.safetensors') for n in names)}{C['rst']}")
+    print()
+
+
 def doctor():
     print(f"\n{C['b']}ansimon doctor{C['rst']}\n")
     ok = True
@@ -401,7 +558,11 @@ def build_graph(a, seed, subject=None, server=None):
         # a canned tail actively fights it.
         prompt = subject
     else:
-        parts = [f"ansiart, {subject}"]
+        # Whatever token THIS LoRA was trained on — not always "ansiart".
+        trig = a.trigger if a.trigger is not None else lora_trigger(a.lora)
+        if trig is None:
+            trig = "" if a.no_lora else "ansiart"    # unknown LoRA: old default
+        parts = [f"{trig}, {subject}" if trig else subject]
         if a.style_add:
             parts.append(a.style_add)
         parts.append("bold shapes, flat colors, high contrast, simple background")
@@ -878,6 +1039,10 @@ def main():
                    help="LoRA weight. default 0.9")
     p.add_argument("--no-lora", dest="no_lora", action="store_true",
                    help="skip the ANSI LoRA (plain SDXL)")
+    p.add_argument("--trigger", default=None,
+                   help="override the LoRA's trigger word. Empty string for "
+                        "none. Normally read from loras.json, which knows what "
+                        "each installed LoRA was captioned with.")
     p.add_argument("--lcm-lora", dest="lcm_lora", default="lcm-lora-sdxl.safetensors",
                    help="LCM LoRA used by --fast")
     p.add_argument("--fast", action="store_true", help="8 steps via LCM: ~3x faster")
@@ -898,6 +1063,8 @@ def main():
     p.add_argument("--list-charsets", action="store_true", help="list charsets and exit")
     p.add_argument("--list-palettes", action="store_true", help="list palettes and exit")
     p.add_argument("--list-styles", action="store_true", help="list style guides and exit")
+    p.add_argument("--list-loras", dest="list_loras", action="store_true",
+                   help="show every installed LoRA and the base it needs")
     p.add_argument("--doctor", action="store_true", help="check the install and exit")
     p.add_argument("--from-ans", dest="from_ans", default=None, metavar="FILE|DIR",
                    help="skip generation: read existing .ans/.xb and convert")
@@ -906,8 +1073,8 @@ def main():
     a = p.parse_args()
 
     if a.show_help or (not a.prompt and not a.batch and not any(
-            (a.list_charsets, a.list_palettes, a.list_styles, a.doctor,
-             a.from_ans))):
+            (a.list_charsets, a.list_palettes, a.list_styles, a.list_loras,
+             a.doctor, a.from_ans))):
         print_help()
         return 0
     if a.list_charsets:
@@ -919,10 +1086,44 @@ def main():
     if a.list_styles:
         print_styles()
         return 0
+    if a.list_loras:
+        print_loras()
+        return 0
     if a.doctor:
         return doctor()
     if a.from_ans:
         return convert_existing(a)
+
+    # Short names, then refuse to mix architectures. A SD1.5 LoRA on an SDXL
+    # base does not fail cleanly — it dies deep in the weight patcher, or
+    # samples an image that silently ignores the LoRA. Both are worse than a
+    # sentence here, and the split is easy to hit: the ANSI LoRAs in the wild
+    # are spread over SDXL, SD1.5, Flux and ZImage, and the grymmjack-* ones
+    # trained in this repo are SD1.5 while --base defaults to SDXL.
+    a.base = resolve_model(a.base, "checkpoints")
+    if not a.no_lora:
+        a.lora = resolve_model(a.lora, "loras")
+        b_arch = model_arch(os.path.join(_model_dir("checkpoints"), a.base))
+        l_arch = model_arch(os.path.join(_model_dir("loras"), a.lora))
+        if "?" not in (b_arch, l_arch) and b_arch != l_arch:
+            alt = [f for f in sorted(os.listdir(_model_dir("checkpoints")))
+                   if f.endswith(".safetensors")
+                   and model_arch(os.path.join(_model_dir("checkpoints"), f)) == l_arch]
+            sys.exit(
+                f"{a.lora} is a {l_arch} LoRA but --base {a.base} is {b_arch}.\n"
+                f"  A LoRA only fits the architecture it was trained against "
+                f"({l_arch} cross-attention is a different width, and SDXL has a "
+                f"second text encoder).\n"
+                + (f"  Try: --base {alt[0].removesuffix('.safetensors')}\n"
+                   if alt else
+                   f"  No {l_arch} checkpoint installed in "
+                   f"{_model_dir('checkpoints')}.\n")
+                + f"  Or --list-loras to see what matches {b_arch}.")
+        if a.fast and l_arch == "SD1.5":
+            # The LCM LoRA is SDXL-only; chaining it onto SD1.5 would hit the
+            # same mismatch one node further down the graph.
+            sys.exit("--fast uses an SDXL LCM LoRA and cannot combine with a "
+                     "SD1.5 base. Drop --fast, or use an SDXL LoRA.")
 
     # --- canvas -----------------------------------------------------------
     try:

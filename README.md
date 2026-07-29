@@ -283,6 +283,44 @@ which is exactly what a deliberate palette restriction should cost.
 `--lock-palette` is rgb-only and is refused elsewhere: at depth 16 the palette
 already *is* the constraint, and at 256 the colours belong to the viewer.
 
+### `--lora` — swapping the model's idea of "ANSI"
+
+```bash
+ansimon --list-loras                              # what's installed, and what each needs
+ansimon "a knight" --lora teletext-screens-xl     # short name; no .safetensors needed
+```
+
+Two things `--list-loras` tells you that matter more than the file list:
+
+**Which base each LoRA needs.** A LoRA only fits the architecture it was trained
+against — SD1.5 cross-attention is 768 wide, SDXL's is 2048, and SDXL has a
+second text encoder that SD1.5 LoRAs have no weights for. Mixing them doesn't
+fail cleanly; it either dies deep in ComfyUI's weight patcher or samples a
+picture that silently ignores the LoRA. ansimon reads both headers and refuses:
+
+```
+ansi-art-15.safetensors is a SD1.5 LoRA but --base sd_xl_base_1.0.safetensors is SDXL.
+  Try: --base v1-5-pruned-emaonly
+```
+
+This is not hypothetical — the ANSI LoRAs on Civitai are split across SDXL,
+SD1.5, Flux and ZImageTurbo, and the `grymmjack-*` LoRAs trained in this repo
+are SD1.5 while `--base` defaults to SDXL.
+
+**Which trigger word each one wants.** A LoRA fires properly only when the
+prompt contains the token it was captioned with, and every ANSI LoRA picked a
+different one — `ansiart`, `ral-ansrt`, `p1x3lt3xt`, `teletext page`. ansimon
+used to hardcode `ansiart`, which is right for exactly one of them; comparing
+LoRAs that way measures the base model with a stray token in the prompt.
+`loras.json` maps them, `--trigger` overrides, and `--list-loras` shows a `?`
+for any LoRA with no entry so you know it's falling back to the old default.
+
+Drop a `.safetensors` in `ComfyUI/models/loras`, add an entry to `loras.json`,
+done.
+
+> One trigger is misspelled upstream (`zxspectrum syle`). It's kept verbatim,
+> because the typo is the token the LoRA was actually trained on.
+
 ### `--from-ans` — read art ansimon didn't make
 
 ansimon already owns a CP437 glyph table, a renderer, an XBin writer and a
