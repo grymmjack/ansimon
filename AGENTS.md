@@ -367,3 +367,43 @@ once padding is normalised** — 201 duplicates in total. Near-duplicate pairs
 (same size, >=95% of cells matching, i.e. a re-release with the group tag
 redrawn) were only 2, so exact-after-trim is enough; fuzzy matching is not worth
 the complexity here.
+
+## Validate against pixelview, never against yourself
+
+Three separate bugs shipped here because the test loop was closed: ansimon's
+parser read ansimon's output and ansimon's renderer drew it. They agreed
+perfectly with each other while all three were wrong, because they shared the
+mistake. "Bit-exact round trip" proved self-consistency, not correctness.
+
+  1. **The ANSI reader.** Audited against pixelview on 40 scene pieces: zero
+     pixel-exact, wrong canvas height on 21. Rendering now shells out to
+     `pixelview --render`; ansimon does not parse other people's art.
+  2. **CGA vs SGR colour order.** Palette index 1 is BLUE but SGR 31 is RED;
+     index 3 is CYAN but SGR 33 is YELLOW — the RGB bits run opposite ways.
+     Writing `30 + index` swapped red/blue and cyan/brown in every file.
+     See `CGA_TO_SGR` in ansi.py.
+  3. **Glyph geometry.** The block characters were generated mathematically on
+     the reasoning that a half block "is the top 8 rows". The real VGA upper
+     half is rows **0-6** and the lower half **7-15**. 111 of 256 glyphs
+     disagreed with the font. `vga8x16.bin` is now extracted from pixelview's
+     own font by `tools/extract-font.py`.
+
+The standing check, which must stay at 0 differing pixels:
+
+    ansimon "..." --output-to /tmp/t
+    pixelview --render /tmp/t/*.ans -o /tmp/t/pv.png
+    # compare /tmp/t/*_ansi_*.png against pv.png
+
+## Defaults, and why
+
+- `--charset halfblock` — hard cell-aligned edges read as ANSI; richer charsets
+  reproduce the source render more faithfully and therefore look more like pixel
+  art. Same reason not to raise the grid past ~120 columns for "quality".
+- `--dither` **off** — error diffusion scatters ink into empty cells (blank
+  cells 36% -> 25%, against ~60% in real scene art) and reads as mush.
+- Shade blending is the *right* way to dither in ANSI: `0xB0/B1/B2` over a
+  foreground/background pair yields 720 tones from 16 colours. It must be
+  enumerated, not derived — deriving fg/bg from a cell's own pixels gives
+  fg == bg on a flat cell, so the blend is never a candidate. `shade_bias`
+  defaults low (0.10); at 1.0 it dithers 75% of the canvas against a real
+  corpus's 10%.

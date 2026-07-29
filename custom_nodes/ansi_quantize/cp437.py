@@ -11,27 +11,26 @@ Using one table for both is what keeps the PNG an honest picture of the `.ANS`
 
 Where the shapes come from
 --------------------------
-Two sources, in this order:
+`vga8x16.bin` — a real VGA font, extracted from the reference renderer by
+rendering a full CP437 chart and reading the cells back (tools/extract-font.py).
+It is the authority; the PSF / TTF / procedural paths below are fallbacks for a
+machine without it.
 
-1. A PSF console font (`/usr/share/consolefonts/*VGA16*`), mapped
-   CP437 -> Unicode -> glyph index via the font's own Unicode table. This gives
-   authentic VGA letters, digits, punctuation and box-drawing.
+This used to generate the geometric glyphs procedurally, on the reasoning that
+a half block "IS the top 8 rows of the cell" and so geometry beat sampling a
+font. That is arithmetic, not the ROM. The real VGA upper half block covers
+rows **0-6** and the lower half rows **7-15** — seven and nine, not eight and
+eight. That one-pixel error was in nearly every half-block cell, and 111 of 256
+glyphs disagreed with the font in total.
 
-2. Procedural generation for the GEOMETRIC range — and this is not a fallback,
-   it is mandatory. Debian's console fonts are missing precisely the glyphs
-   ANSI art is built out of:
+The lesson generalises: the PNG being a faithful picture of the .ANS is only
+meaningful against an *external* reference. Checking ansimon's renderer against
+ansimon's parser proves they share assumptions, not that either is right.
 
-       0xB2 (dark shade)  0xDC (lower half)  0xDD (left half)
-       0xDE (right half)  0xDF (upper half)
-
-   Measured against a corpus of 112 hand-drawn scene pieces (179,000 non-blank
-   cells): those five alone are **45.9%** of all non-blank cells, and together
-   with the full block **64.0%**. They are also exactly definable as geometry,
-   so generating them is *more* accurate than sampling a font would be.
-
-If no PSF font is found at all, a TTF fallback (DejaVu Sans Mono) is rendered
-at 8x16; the geometric glyphs are still generated, so block art keeps working
-even on a machine with no console fonts installed.
+Those geometric glyphs do matter — measured on 112 hand-drawn scene pieces
+(179,000 non-blank cells), the five shade/half-block characters alone are 45.9%
+of non-blank cells and 64.0% with the full block. Which is exactly why getting
+their shape wrong was so costly.
 """
 import gzip
 import os
@@ -271,6 +270,28 @@ def _ttf_glyph(ch, size=16):
 # ---------------------------------------------------------------------------
 _CACHE = {}
 
+# The authority: 256 glyphs x 16 rows, 1 bit per pixel, extracted from the
+# reference renderer's own VGA font by rendering a full CP437 chart and reading
+# the cells back. See tools/extract-font.py.
+#
+# This replaced procedurally generating the geometric glyphs. That approach was
+# justified here as being "more accurate than sampling a font, because a half
+# block IS the top 8 rows of the cell" — which is arithmetic, not the ROM. The
+# real VGA upper half block covers rows 0-6 and the lower half rows 7-15: seven
+# and nine, not eight and eight. Getting that wrong put a one-pixel error in
+# nearly every half-block cell, and 111 glyphs in total disagreed with the font.
+_FONT_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vga8x16.bin")
+
+
+def _embedded_font():
+    """The extracted VGA font as (256,16,8) bool, or None if absent."""
+    if not os.path.exists(_FONT_BIN):
+        return None
+    raw = np.fromfile(_FONT_BIN, np.uint8)
+    if raw.size != 256 * 16:
+        return None
+    return np.unpackbits(raw).reshape(256, 16, 8).astype(bool)
+
 
 def glyph_bitmaps():
     """(256, 16, 8) bool array — glyph_bitmaps()[c] is CP437 char `c`.
@@ -281,6 +302,11 @@ def glyph_bitmaps():
     """
     if "bitmaps" in _CACHE:
         return _CACHE["bitmaps"]
+
+    font = _embedded_font()
+    if font is not None:
+        _CACHE["bitmaps"] = font
+        return font
 
     table = np.zeros((256, CELL_H, CELL_W), bool)
     glyphs, uni = _psf_source()
@@ -344,6 +370,8 @@ def charset_indices(name):
 
 def font_source_description():
     """Human-readable note about where the text glyphs came from (for --doctor)."""
+    if _embedded_font() is not None:
+        return f"bundled VGA 8x16 ({_FONT_BIN})"
     env = os.environ.get("ANSIMON_FONT")
     for path in ([env] if env else []) + list(_PSF_CANDIDATES):
         if path and os.path.exists(path):

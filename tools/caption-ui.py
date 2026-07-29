@@ -69,6 +69,8 @@ TEMPLATE = """<!doctype html>
  #zoomrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
  #zoomrow button{padding:5px 13px;font-size:13px}
  #zoomrow button.on{background:#2e6f5e;border-color:#6ecfb0;color:#fff;font-weight:700}
+ #rejectbtn.on{background:#7a2b2b;border-color:#c56;color:#fff;font-weight:700}
+ #viewport.rejected{border-color:#c56;border-width:3px}
  #clip{color:#eb9;font-weight:700}
  aside{width:340px;display:flex;flex-direction:column;gap:10px}
  label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#888}
@@ -108,7 +110,8 @@ TEMPLATE = """<!doctype html>
       <span class="hint" style="margin-left:auto">
         <kbd>Ctrl</kbd>+<kbd>Enter</kbd> save &amp; next &nbsp;
         <kbd>Ctrl</kbd>+<kbd>&larr;</kbd>/<kbd>&rarr;</kbd> move &nbsp;
-        <kbd>Ctrl</kbd>+<kbd>S</kbd> skip &nbsp; <kbd>Ctrl</kbd>+<kbd>0..3</kbd> zoom
+        <kbd>Ctrl</kbd>+<kbd>S</kbd> skip &nbsp; <kbd>Ctrl</kbd>+<kbd>X</kbd> exclude
+        &nbsp; <kbd>Ctrl</kbd>+<kbd>0..3</kbd> zoom
       </span>
     </div>
     <div id="viewport"><img id="img" class="fit" alt=""></div>
@@ -130,6 +133,10 @@ TEMPLATE = """<!doctype html>
     <div>
       <label for="extra">Extra tags (optional)</label>
       <input id="extra" placeholder="dark, chrome, gothic, symmetrical">
+    </div>
+    <div class="row">
+      <button id="rejectbtn" onclick="toggleReject()" style="flex:1">
+        &#10007; Bad render — exclude</button>
     </div>
     <div class="row">
       <button onclick="prev()">&larr; Prev</button>
@@ -191,7 +198,9 @@ function render(){
   $('extra').value = c.extra || '';
   const n = Object.keys(caps).length;
   $('fill').style.width = (100*n/DATA.length) + '%%';
-  $('count').textContent = n + ' captioned';
+  $('count').textContent = n + ' captioned' +
+    (rejects.length ? '  \u00b7 ' + rejects.length + ' excluded' : '');
+  paintReject();
   updatePreview();
   $('subject').focus();
 }
@@ -205,6 +214,22 @@ function caption(){
 function updatePreview(){ $('preview').textContent = caption(); }
 ['subject','extra','kind'].forEach(id => $(id).addEventListener('input', updatePreview));
 
+let rejects = JSON.parse(localStorage.getItem(KEY + '-rej') || '[]');
+function toggleReject(){
+  const n = DATA[i].name;
+  const k = rejects.indexOf(n);
+  if (k >= 0) rejects.splice(k, 1); else rejects.push(n);
+  localStorage.setItem(KEY + '-rej', JSON.stringify(rejects));
+  paintReject();
+  if (k < 0) next();          // marking it bad means moving on
+}
+function paintReject(){
+  const bad = rejects.includes(DATA[i].name);
+  $('rejectbtn').classList.toggle('on', bad);
+  $('viewport').classList.toggle('rejected', bad);
+  $('rejectbtn').innerHTML = bad ? '\u2717 EXCLUDED — click to keep'
+                                 : '\u2717 Bad render — exclude';
+}
 function save(){
   caps[DATA[i].name] = {subject:$('subject').value.trim(), kind:$('kind').value,
                         extra:$('extra').value.trim(), caption:caption()};
@@ -219,6 +244,7 @@ document.addEventListener('keydown', ev => {
   else if (ev.ctrlKey && ev.key === 'ArrowRight'){ ev.preventDefault(); next(); }
   else if (ev.ctrlKey && ev.key === 'ArrowLeft'){ ev.preventDefault(); prev(); }
   else if (ev.ctrlKey && ev.key.toLowerCase() === 's'){ ev.preventDefault(); skip(); }
+  else if (ev.ctrlKey && ev.key.toLowerCase() === 'x'){ ev.preventDefault(); toggleReject(); }
   else if (ev.ctrlKey && '0123'.includes(ev.key)){
     ev.preventDefault(); setZoom(ev.key === '0' ? 'fit' : Number(ev.key));
   }
@@ -226,7 +252,7 @@ document.addEventListener('keydown', ev => {
 
 function exportJSON(){
   save();
-  const out = {};
+  const out = {_rejected: rejects};
   for (const k in caps) out[k] = caps[k].caption;
   const blob = new Blob([JSON.stringify(out, null, 1)], {type:'application/json'});
   const a = document.createElement('a');
@@ -248,12 +274,16 @@ def main():
                          "A multi-artist dataset is sorted by folder, so without "
                          "this your own work can sit hundreds of pieces deep.")
     ap.add_argument("--max-px", type=int, default=0,
-                    help="downscale embedded images to this width (0 = as-is)")
+                    help="cap the embedded image's longest side (0 = as-is). "
+                         "A full multi-screen piece can be thousands of pixels "
+                         "tall; capping keeps the page loadable.")
     a = ap.parse_args()
 
     root = os.path.abspath(os.path.expanduser(a.dataset))
-    imgs = sorted(glob.glob(os.path.join(root, "*", "*.png")) +
-                  glob.glob(os.path.join(root, "*.png")))
+    # Skip _rendered/, _staged/ etc — those are intermediates, not samples.
+    imgs = sorted(p for p in (glob.glob(os.path.join(root, "*", "*.png")) +
+                              glob.glob(os.path.join(root, "*.png")))
+                  if not os.path.basename(os.path.dirname(p)).startswith("_"))
     if a.only:
         want = a.only.lower()
         imgs = [p for p in imgs
@@ -277,8 +307,20 @@ def main():
     for p in imgs:
         name = os.path.basename(p)
         m = meta.get(name, {})
-        with open(p, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
+        if a.max_px:
+            from PIL import Image
+            import io
+            im = Image.open(p).convert("RGB")
+            if max(im.size) > a.max_px:
+                sc = a.max_px / max(im.size)
+                im = im.resize((max(1, int(im.width * sc)),
+                                max(1, int(im.height * sc))), Image.NEAREST)
+            buf = io.BytesIO()
+            im.save(buf, "PNG", optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        else:
+            with open(p, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
         data.append({"name": name, "img": "data:image/png;base64," + b64,
                      "kind": m.get("kind", "blockart logo"),
                      "title": html.escape(m.get("title", "")),

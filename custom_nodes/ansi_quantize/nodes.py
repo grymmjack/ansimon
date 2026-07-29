@@ -201,8 +201,35 @@ def _score(st, pal, n_bg, rows_slice=None, bias=None):
     return err, fg_idx, bg_idx
 
 
+def shade_blends(pal, n_bg, shades=(0xB0, 0xB1, 0xB2)):
+    """Every colour a shade character can produce -> (blend_rgb, glyph, fg, bg).
+
+    This is how ANSI actually dithers. `0xB0 0xB1 0xB2` cover 25/50/75% of the
+    cell, so drawing one in foreground colour F over background B yields a
+    perceived colour `cov*F + (1-cov)*B` — an intermediate tone that is not in
+    the 16-colour palette at all. Three shades x 16 x 16 pairs turn 16 colours
+    into a few hundred usable tones.
+
+    The matcher cannot find these by deriving fg/bg from the cell's own pixels:
+    on a flat cell both derived means are the same value and quantize to the
+    same entry, so the shade renders solid. The blends have to be enumerated.
+    """
+    cov = {0xB0: 0.25, 0xB1: 0.50, 0xB2: 0.75}
+    out_rgb, out_meta = [], []
+    for g in shades:
+        c = cov[g]
+        for f in range(16):
+            for b in range(n_bg):
+                if f == b:
+                    continue                      # renders solid; already covered
+                out_rgb.append(c * pal[f] + (1.0 - c) * pal[b])
+                out_meta.append((g, f, b))
+    return np.asarray(out_rgb), out_meta
+
+
 def match_cells(patches, chars, pal, ice=False, dither=False, cols=None,
-                strength=0.75, clamp=64.0, portable_bias=0.5):
+                strength=0.75, clamp=64.0, portable_bias=0.5, shade_blend=True,
+                shade_bias=0.10):
     """Choose (char, fg, bg) for every cell.
 
     `patches` is (N, CELL_H*CELL_W, 3) float in 0-255, `chars` the allowed
@@ -237,8 +264,38 @@ def match_cells(patches, chars, pal, ice=False, dither=False, cols=None,
         err = err + tie * (bg_idx >= 8)
         best = err.argmin(1)
         rows = np.arange(st.n)
-        return (chars[best], fg_idx[rows, best], bg_idx[rows, best],
-                st.cnt[best], err[rows, best])
+        out_ch = chars[best]
+        out_fg = fg_idx[rows, best]
+        out_bg = bg_idx[rows, best]
+        out_cnt = st.cnt[best]
+        out_err = err[rows, best]
+
+        if shade_blend and any(c in (0xB0, 0xB1, 0xB2) for c in chars):
+            # Offer every shade blend as an alternative for each cell and take
+            # it when it reproduces the cell's average colour better. Scored on
+            # the CELL MEAN, because at 8x16 px the eye integrates the cell —
+            # which is exactly why a dither reads as an intermediate tone
+            # rather than as a pattern.
+            blends, meta = shade_blends(pal, n_bg)
+            mean = st.s_total / st.p                              # (N,3)
+            bi = nearest_indices(mean, blends)                    # (N,)
+            cand = blends[bi]
+            shade_err = st.p * ((cand - mean) ** 2).sum(-1)
+            # what the current pick averages out to
+            cur = (pal[out_fg] * out_cnt[:, None]
+                   + pal[out_bg] * (st.p - out_cnt)[:, None]) / st.p
+            cur_err = st.p * ((cur - mean) ** 2).sum(-1)
+            # `shade_bias` is how much BETTER a blend must be to displace the
+            # structural pick. At 1.0 a blend wins on any improvement, which
+            # dithers the whole canvas — measured at 75% shades against a real
+            # corpus's 10%. Requiring a clear win keeps shades where they
+            # belong: gradients, over a structure of solids and half blocks.
+            take = shade_err < cur_err * shade_bias
+            for i in np.where(take)[0]:
+                g, f, b = meta[bi[i]]
+                out_ch[i], out_fg[i], out_bg[i] = g, f, b
+                out_cnt[i] = {0xB0: 0.25, 0xB1: 0.50, 0xB2: 0.75}[g] * st.p
+        return out_ch, out_fg, out_bg, out_cnt, out_err
 
     # --- serpentine cell-level error diffusion --------------------------------
     assert cols, "dither needs the grid width to walk rows"
@@ -314,13 +371,13 @@ class AnsiQuantize:
                 "image": ("IMAGE",),
                 "cols": ("INT", {"default": 80, "min": 8, "max": 320, "step": 1}),
                 "rows": ("INT", {"default": 50, "min": 4, "max": 200, "step": 1}),
-                "charset": (list(_CHARSET_NAMES), {"default": "blocks"}),
+                "charset": (list(_CHARSET_NAMES), {"default": "halfblock"}),
                 "palette": (list(ALL_PALETTES.keys()) + ["Custom"],
                             {"default": "ansi"}),
             },
             "optional": {
                 "ice_colors": ("BOOLEAN", {"default": True}),
-                "dither": ("BOOLEAN", {"default": True}),
+                "dither": ("BOOLEAN", {"default": False}),
                 "dither_strength": ("FLOAT", {"default": 0.75, "min": 0.0,
                                               "max": 1.0, "step": 0.05}),
                 "smooth": (["mode", "median", "none"], {"default": "mode"}),
@@ -329,6 +386,7 @@ class AnsiQuantize:
                 "snap_colors": ("INT", {"default": 0, "min": 0, "max": 256, "step": 1}),
                 "aspect": (["square", "classic (4:3)"], {"default": "square"}),
                 "view_scale": ("INT", {"default": 1, "min": 1, "max": 8, "step": 1}),
+                "scale": ("INT", {"default": 1, "min": 1, "max": 8, "step": 1}),
                 "resample": (list(_RESAMPLE.keys()), {"default": "box (area average)"}),
                 "force_black_bg": ("BOOLEAN", {"default": False}),
                 "custom_hex": ("STRING", {"default": "", "multiline": True}),
@@ -341,9 +399,9 @@ class AnsiQuantize:
     CATEGORY = "image/ansi art"
 
     def process(self, image, cols, rows, charset, palette,
-                ice_colors=True, dither=True, dither_strength=0.75,
+                ice_colors=True, dither=False, dither_strength=0.75,
                 smooth="mode", pixel_grid=0,
-                snap_pixels=False, snap_colors=0, aspect="square", view_scale=1,
+                snap_pixels=False, snap_colors=0, aspect="square", view_scale=1, scale=1,
                 resample="box (area average)", force_black_bg=False,
                 custom_hex=""):
         pal = np.asarray(parse_palette(palette, custom_hex), np.float64)
@@ -393,6 +451,11 @@ class AnsiQuantize:
         # --- 4. render the cells back out -------------------------------------
         out = render_cells(ch, fg, bg, pal.astype(np.uint8))
         img = Image.fromarray(out, "RGB")
+        if scale > 1:
+            # Integer nearest-neighbour only. The PNG stays a faithful picture
+            # of the .ANS — every pixel still comes from a glyph bitmap, just
+            # drawn larger. Any non-integer or smooth resize would break that.
+            img = img.resize((img.width * scale, img.height * scale), Image.NEAREST)
 
         preview = apply_aspect(img, aspect)
         if view_scale > 1:

@@ -26,8 +26,18 @@ import re
 import numpy as np
 
 ESC = "\x1b"
-SGR_FG = {i: 30 + i for i in range(8)}
-SGR_BG = {i: 40 + i for i in range(8)}
+
+# CGA palette order and ANSI SGR order are NOT the same — the RGB bits run the
+# other way round. Palette index 1 is BLUE, but SGR 31 is RED; index 3 is CYAN,
+# SGR 33 is YELLOW. Writing `30 + index` silently swaps red<->blue and
+# cyan<->brown in every file produced.
+#
+#   palette:  0 black  1 blue   2 green  3 cyan  4 red   5 magenta 6 brown 7 grey
+#   SGR:     30 black 31 red   32 green 33 yellow 34 blue 35 magenta 36 cyan 37 white
+CGA_TO_SGR = (0, 4, 2, 6, 1, 5, 3, 7)
+SGR_TO_CGA = (0, 4, 2, 6, 1, 5, 3, 7)      # the mapping is its own inverse
+SGR_FG = {i: 30 + CGA_TO_SGR[i] for i in range(8)}
+SGR_BG = {i: 40 + CGA_TO_SGR[i] for i in range(8)}
 
 # SAUCE — the metadata record the art scene appends to .ANS files. 128 bytes
 # after an EOF (0x1A) marker. Without it, viewers have to guess the canvas
@@ -342,9 +352,9 @@ def parse_ans(data, cols=80, rows=None, ice=None, wrap=True):
                     elif v == 25:
                         blink = False
                     elif 30 <= v <= 37:
-                        fg = v - 30
+                        fg = SGR_TO_CGA[v - 30]
                     elif 40 <= v <= 47:
-                        bg = v - 40
+                        bg = SGR_TO_CGA[v - 40]
             elif final == "A":
                 y = max(0, y - max(1, p0))
             elif final == "B":

@@ -81,14 +81,22 @@ DEFAULT_NEGATIVE = ("photograph, photorealistic, 3d render, depth of field, blur
                     "soft focus, gradient mesh, fine detail, tiny text, watermark, "
                     "signature, jpeg artifacts, noise, grain")
 
-# Canonical canvas presets. 8x16 cells mean cols:rows of 2:1 is a square image,
-# which is why 80x40 is the default — it matches a square SDXL render exactly.
+# A cell is 8x16, so cols:rows of 2:1 is a square image.
+#
+# Resist the urge to raise these for "quality". More cells reproduces the source
+# render more faithfully — and that makes it look LESS like ANSI, because the
+# coarse grid and visible block characters ARE the aesthetic. Past roughly 120
+# columns it stops reading as text-mode art and starts reading as pixel art that
+# happens to be stored as characters. The lever for quality is a cleaner source
+# image and less dithering, not a finer grid.
 PRESETS = {
-    "bbs": (80, 25),        # the classic 80x25 DOS text screen -> 640x400
-    "square": (80, 40),     # square canvas -> 640x640
+    "bbs": (80, 25),        # the classic DOS text screen -> 640x400
     "vga50": (80, 50),      # VGA 50-line mode -> 640x800
     "wide": (132, 43),      # 132-column text mode
-    "tall": (80, 60),
+    "small": (80, 40),      # 640x640 square
+    "hi": (160, 80),        # 1280x1280 square  <- default
+    "xl": (240, 120),       # 1920x1920 square
+    "ultra": (320, 160),    # 2560x2560 square
 }
 
 
@@ -133,14 +141,14 @@ def print_help():
 {c['b']}CANVAS{c['rst']}
 {opt('--size WxH|PRESET', 'canvas in CHARACTERS, or a preset name', '80x40')}
 {opt('', f"presets: {', '.join(f'{k}={v[0]}x{v[1]}' for k, v in PRESETS.items())}")}
-{opt('--charset NAME', 'which CP437 characters may be used', 'blocks')}
+{opt('--charset NAME', 'which CP437 characters may be used', 'halfblock')}
 {opt('', f"one of: {', '.join(CHARSETS)}  (--list-charsets)")}
 {opt('--palette NAME', 'the 16 colours to render with', 'ansi')}
 {opt('--aspect MODE', "'square' or 'classic' (4:3 CRT stretch)", 'square')}
 
 {c['b']}LOOK{c['rst']}
 {opt('--style NAMES', 'proven prompt guide(s), comma-separated (--list-styles)')}
-{opt('--dither / --no-dither', 'cell-level error diffusion', 'on')}
+{opt('--dither / --no-dither', 'cell-level error diffusion', 'off')}
 {opt('--dither-strength N', 'damping, 0-1. lower = less colour noise', '0.75')}
 {opt('--ice / --no-ice', 'iCE colours: 16 backgrounds, no blink', 'on')}
 {opt('--black-bg', 'pin every background to black (BBS look)')}
@@ -403,7 +411,22 @@ def build_graph(a, seed, subject=None, server=None):
                          "denoise": 1.0, "model": None, "positive": ["6", 0],
                          "negative": ["7", 0], "latent_image": ["5", 0]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
-        "10": {"class_type": "AnsiQuantize",
+    }
+    if a.raw:
+        # Skip the character grid entirely. What every ANSI-style LoRA's gallery
+        # actually shows is this image — a picture in the style, not a CP437
+        # cell grid. Quantizing a 267k-colour render down to 2000 cells and 16
+        # colours is a huge, deliberate loss; when you want the look rather
+        # than a file PabloDraw can open, don't pay it.
+        g["11"] = {"class_type": "SaveImage",
+                   "inputs": {"filename_prefix": prefix + "_raw", "images": ["8", 0]}}
+        model_src, clip_src = _chain_loras(a, g)
+        g["6"]["inputs"]["clip"] = clip_src
+        g["7"]["inputs"]["clip"] = clip_src
+        g["3"]["inputs"]["model"] = model_src
+        return g
+
+    g["10"] = {"class_type": "AnsiQuantize",
                "inputs": {"image": ["8", 0], "cols": a.cols, "rows": a.rows,
                           "charset": a.charset, "palette": a.palette,
                           "ice_colors": a.ice, "dither": a.dither,
@@ -412,15 +435,22 @@ def build_graph(a, seed, subject=None, server=None):
                           "snap_pixels": a.snap_pixels, "snap_colors": a.snap_colors,
                           "aspect": ("classic (4:3)" if a.aspect.startswith("c")
                                      else "square"),
-                          "view_scale": a.view_scale, "resample": a.filter,
-                          "force_black_bg": a.black_bg, "custom_hex": a.custom_hex}},
-    }
+                          "view_scale": a.view_scale, "scale": a.scale,
+                          "resample": a.filter,
+                          "force_black_bg": a.black_bg, "custom_hex": a.custom_hex}}
     if not a.ans_only:
         g["11"] = {"class_type": "SaveImage",
                    "inputs": {"filename_prefix": prefix + "_ansi", "images": ["10", 0]}}
     if a.preview:
         g["12"] = {"class_type": "SaveImage",
                    "inputs": {"filename_prefix": prefix + "_preview", "images": ["10", 1]}}
+    if a.save_raw:
+        # The model's own picture, BEFORE the character grid touches it. Worth
+        # having: a style LoRA's showreel is always this image, so comparing it
+        # against the quantized result separates "the model drew badly" from
+        # "the quantizer threw the detail away".
+        g["14"] = {"class_type": "SaveImage",
+                   "inputs": {"filename_prefix": prefix + "_raw", "images": ["8", 0]}}
     if a.format != "none":
         g["13"] = {"class_type": "SaveAnsi",
                    "inputs": {"cells_b64": ["10", 2], "filename_prefix": prefix,
@@ -431,9 +461,24 @@ def build_graph(a, seed, subject=None, server=None):
                               "xb_compress": not a.no_compress,
                               "xb_embed_font": not a.no_embed_font}}
 
-    # Chain LoRAs onto the base: SDXL -> [ANSI Art XL] -> [LCM if --fast].
-    # Each LoraLoader patches both the model and the text encoder (clip), so we
-    # thread the "current" source through and wire the sampler/prompts to the end.
+    model_src, clip_src = _chain_loras(a, g)
+    g["6"]["inputs"]["clip"] = clip_src
+    g["7"]["inputs"]["clip"] = clip_src
+    g["3"]["inputs"]["model"] = model_src
+    return g
+
+
+class SubmitError(Exception):
+    """ComfyUI refused the graph. Carries the reason so the farm can report it."""
+
+
+def _chain_loras(a, g):
+    """Chain LoRAs onto the base: SDXL -> [ANSI LoRA] -> [LCM if --fast].
+
+    Each LoraLoader patches both the model and the text encoder, so the
+    "current" source is threaded through and the sampler/prompts wire to the
+    end of the chain.
+    """
     model_src, clip_src = ["4", 0], ["4", 1]
     if not a.no_lora:
         g["15"] = {"class_type": "LoraLoader",
@@ -448,15 +493,7 @@ def build_graph(a, seed, subject=None, server=None):
                               "lora_name": a.lcm_lora,
                               "strength_model": 1.0, "strength_clip": 1.0}}
         model_src, clip_src = ["16", 0], ["16", 1]
-
-    g["6"]["inputs"]["clip"] = clip_src
-    g["7"]["inputs"]["clip"] = clip_src
-    g["3"]["inputs"]["model"] = model_src
-    return g
-
-
-class SubmitError(Exception):
-    """ComfyUI refused the graph. Carries the reason so the farm can report it."""
+    return model_src, clip_src
 
 
 def submit(graph, server=None, raising=False):
@@ -649,26 +686,39 @@ def main():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("-h", "--help", action="store_true", dest="show_help")
     p.add_argument("prompt", nargs="?", help='what to draw, e.g. "a fierce dragon"')
-    p.add_argument("--size", default="80x40",
-                   help="canvas in CHARACTERS: WxH, W, or a preset name. default 80x40")
+    p.add_argument("--size", default="small",
+                   help="canvas in CHARACTERS: WxH, W, or a preset. default small (80x40)")
+    p.add_argument("--scale", type=int, default=1,
+                   help="integer upscale of the output PNG. Does NOT change the "
+                        "cell grid — the image stays a faithful picture of the "
+                        ".ans, just drawn larger. default 1")
     p.add_argument("--cols", type=int, default=None, help="canvas width in characters")
     p.add_argument("--rows", type=int, default=None, help="canvas height in characters")
     p.add_argument("-n", "--number", type=int, default=1,
                    help="how many to make, each a different seed. default 1")
     p.add_argument("--batch", default=None, metavar="SUBJECTS",
                    help="comma-separated subjects; one of each per pass")
-    p.add_argument("--charset", default="blocks",
-                   help=f"CP437 subset: {', '.join(CHARSETS)}. default blocks")
+    # halfblock by default: space, full block, upper half. It reads as ANSI
+    # more reliably than any richer vocabulary, because hard cell-aligned edges
+    # ARE the aesthetic. Wider charsets reproduce the source render more
+    # faithfully and look more like pixel art for exactly that reason.
+    p.add_argument("--charset", default="halfblock",
+                   help=f"CP437 subset: {', '.join(CHARSETS)}. default halfblock")
     p.add_argument("--palette", default="ansi",
                    help=f"16-colour palette: {', '.join(PALETTES)}. default ansi")
     p.add_argument("--aspect", default="square",
                    help="'square' or 'classic' (4:3 CRT stretch). default square")
     p.add_argument("--style", default="",
                    help="comma-separated style guides (--list-styles)")
-    p.add_argument("--dither", action="store_true", default=True,
-                   help="cell-level error diffusion (default on)")
+    # Off by default. Dithering scatters ink into empty cells: measured on the
+    # same render it drops blank cells from 36% to 25%, where real scene art
+    # sits nearer 60%. The result reads as mush rather than as ANSI. It does
+    # buy back the shade ramp (8% vs 0%), so it stays available.
+    p.add_argument("--dither", action="store_true", default=False,
+                   help="cell-level error diffusion — smoother gradients, "
+                        "but fills empty space and reads noisier (default off)")
     p.add_argument("--no-dither", dest="dither", action="store_false",
-                   help="disable error diffusion — flatter, blockier")
+                   help="(default) flatter, blockier, more like real ANSI")
     p.add_argument("--dither-strength", dest="dither_strength", type=float,
                    default=0.75, help="0-1 damping. lower = less colour noise")
     p.add_argument("--ice", action="store_true", default=True,
@@ -691,6 +741,11 @@ def main():
                    help="don't create per-subject subfolders in --batch mode")
     p.add_argument("--custom-hex", dest="custom_hex", default="",
                    help="16 hex colours for --palette Custom")
+    p.add_argument("--raw", action="store_true",
+                   help="skip the character grid — output the model's picture. "
+                        "This is what ANSI-style LoRA galleries actually show.")
+    p.add_argument("--save-raw", dest="save_raw", action="store_true",
+                   help="also save the model's render before quantization")
     p.add_argument("--preview", action="store_true",
                    help="also save the aspect-corrected preview image")
     p.add_argument("--view-scale", dest="view_scale", type=int, default=1,
@@ -785,10 +840,11 @@ def main():
     if a.format == "none" and a.ans_only:
         sys.exit("--ans-only with no art format would write nothing at all.")
     # .ANS carries no width field, so a non-80-column canvas is only reliably
-    # reopenable as XBin. Say so once rather than let it silently mangle later.
-    if a.cols != 80 and a.format == "ans":
-        print(f"   {C['yel']}note{C['rst']} {a.cols}-column .ans depends on the "
-              f"viewer reading SAUCE for width; --format xb puts it in the header")
+    # reopenable as XBin — which is why XBin becomes the default off 80 columns.
+    if a.cols != 80 and a.format == "ans" and "--format" not in sys.argv:
+        a.format = "both"
+        print(f"   {C['dim']}{a.cols} columns: writing .xb as well, since .ans "
+              f"has no width field{C['rst']}")
 
     # --- defaults that depend on --fast -----------------------------------
     if a.steps is None:
