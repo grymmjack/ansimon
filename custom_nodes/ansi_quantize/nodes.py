@@ -42,7 +42,7 @@ from . import ansi as ansi_fmt
 from . import xbin as xbin_fmt
 from .cp437 import (CELL_H, CELL_W, CHARSETS, charset_indices, font,
                     glyph_bitmaps)
-from .palette import ALL_PALETTES, parse_palette
+from .palette import ALL_PALETTES, parse_palette, xterm256_palette
 
 _RESAMPLE = {"nearest": Image.NEAREST, "box (area average)": Image.BOX,
              "lanczos": Image.LANCZOS}
@@ -364,8 +364,108 @@ def match_cells(patches, chars, pal, ice=False, dither=False, cols=None,
 
 
 # ---------------------------------------------------------------------------
+# Deep colour: the same matcher with the palette constraint removed.
+#
+# `_score` already computes the OPTIMAL colours for each candidate glyph — the
+# mean of the pixels it covers and the mean of the pixels it doesn't — and then
+# throws that precision away by snapping both to the 16 attributes. At 24 bits
+# there is nothing to snap to, so those two means ARE the answer, and the error
+# telescopes into the within-group variance:
+#
+#     sum||x - mean||^2  ==  sum||x||^2 - ||sum x||^2 / n
+#
+# which is built from sums we already have. Truecolor matching is therefore
+# *cheaper* than 16-colour matching, not more expensive.
+#
+# This is the general form of the half-block trick in IMG2ANS-25-RGB.BAS: with
+# a charset of just 0xDF the mask is the top half of the cell, so fg is exactly
+# the top pixel and bg exactly the bottom one and the error is zero. Allowing
+# the full charset lets a glyph edge follow a diagonal, which a half block
+# cannot, so it can only do better.
+# ---------------------------------------------------------------------------
+def rgb_fallback(fg, bg, pal, ice=True):
+    """Nearest 16-colour index for every 24-bit colour used -> (fg_map, bg_map).
+
+    A `.ANS` full of `ESC[..t` sequences shows as one flat colour in anything
+    that doesn't speak the extension — including plain terminals and older
+    scene tools. PabloDraw's own files avoid that by writing a normal SGR
+    attribute first and letting the RGB code override it, so the art still
+    reads at 16 colours. We do the same. It costs a handful of bytes per
+    distinct colour, not per cell, because attributes only change when they
+    change.
+
+    The two planes are mapped SEPARATELY rather than as (fg, bg) pairs. The
+    writer recombines them — a space inherits the live foreground so it can
+    skip an attribute change — and a pair-keyed table would miss on exactly
+    those cells, silently leaving the fallback background stale on the one
+    kind of cell where the background is all you see.
+    """
+    pal = np.asarray(pal, np.float64)[:16]
+
+    def table(plane, n):
+        uniq = np.unique(np.asarray(plane, np.uint8).reshape(-1, 3), axis=0)
+        idx = nearest_indices(uniq, pal[:n])
+        return {tuple(int(v) for v in row): int(i) for row, i in zip(uniq, idx)}
+
+    return table(fg, 16), table(bg, 16 if ice else 8)
+
+
+def match_cells_deep(patches, chars, depth="rgb", pal=None,
+                     cell_h=CELL_H, cell_w=CELL_W):
+    """Choose (char, fg, bg) per cell with colour freed from the 16 attributes.
+
+    Returns `(ch, fg, bg, cnt)`. At depth `rgb` the fg/bg arrays are (N, 3)
+    uint8; at depth `256` they are (N,) indices into `pal`.
+
+    The 256 path solves in free RGB and snaps the two winning colours
+    afterwards, rather than searching every glyph against every palette entry —
+    that search is an (N*G, 256) distance matrix, about 1.7 GB at 80x40. The
+    shortcut is sound because at 256 colours the quantization residual is much
+    smaller than the structural residual, so it almost never reorders the
+    glyphs. At 16 colours it would, which is why `match_cells` does the full
+    search there.
+    """
+    masks = font(cell_h, cell_w)[list(chars)].reshape(len(chars), -1)   # (G,P)
+    st = _CellStats(patches, masks)
+    chars = np.asarray(chars)
+    rows = np.arange(st.n)
+
+    ss_bg = st.ss_total[:, None] - st.ssm
+    err = (st.ssm - (st.sm ** 2).sum(-1) * st.inv_cnt[None, :]
+           + ss_bg - (st.sb ** 2).sum(-1) * st.inv_cnt_bg[None, :])
+    best = err.argmin(1)
+
+    fg_mean = st.sm[rows, best] * st.inv_cnt[best][:, None]            # (N,3)
+    bg_mean = st.sb[rows, best] * st.inv_cnt_bg[best][:, None]
+    out_ch = chars[best]
+    out_cnt = st.cnt[best]
+
+    if depth == "256":
+        pal = np.asarray(pal, np.float64)
+        return (out_ch,
+                nearest_indices(fg_mean, pal).astype(np.uint8),
+                nearest_indices(bg_mean, pal).astype(np.uint8),
+                out_cnt)
+
+    to8 = lambda a: np.clip(np.rint(a), 0, 255).astype(np.uint8)       # noqa: E731
+    return out_ch, to8(fg_mean), to8(bg_mean), out_cnt
+
+
+# ---------------------------------------------------------------------------
 # Rendering: paint the chosen cells back out through the same glyph bitmaps.
 # ---------------------------------------------------------------------------
+def render_cells_rgb(ch, fg, bg, cell_h=CELL_H, cell_w=CELL_W):
+    """Like `render_cells`, but fg/bg are (rows, cols, 3) colours not indices."""
+    rows, cols = ch.shape
+    masks = font(cell_h, cell_w)[ch]                         # (rows,cols,H,W)
+    fg_col = np.asarray(fg, np.uint8)[:, :, None, None, :]
+    bg_col = np.asarray(bg, np.uint8)[:, :, None, None, :]
+    cell = np.where(masks[..., None], fg_col, bg_col)
+    return (cell.transpose(0, 2, 1, 3, 4)
+                .reshape(rows * cell_h, cols * cell_w, 3)
+                .astype(np.uint8))
+
+
 def render_cells(ch, fg, bg, pal, cell_h=CELL_H, cell_w=CELL_W):
     """(rows,cols) cell arrays -> (rows*cell_h, cols*cell_w, 3) uint8 image."""
     rows, cols = ch.shape
@@ -413,6 +513,7 @@ class AnsiQuantize:
                 "dither_strength": ("FLOAT", {"default": 0.75, "min": 0.0,
                                               "max": 1.0, "step": 0.05}),
                 "colors": ("STRING", {"default": ""}),
+                "depth": (["16", "256", "rgb"], {"default": "16"}),
                 "shading": (["none", "light", "medium", "full"],
                             {"default": "light"}),
                 "cell_height": ([16, 8], {"default": 16}),
@@ -437,7 +538,7 @@ class AnsiQuantize:
 
     def process(self, image, cols, rows, charset, palette,
                 ice_colors=True, dither=False, dither_strength=0.75,
-                colors="", shading="light", cell_height=16, cell_width=8,
+                colors="", depth="16", shading="light", cell_height=16, cell_width=8,
                 smooth="mode", pixel_grid=0,
                 snap_pixels=False, snap_colors=0, aspect="square", view_scale=1, scale=1,
                 resample="box (area average)", force_black_bg=False,
@@ -473,30 +574,48 @@ class AnsiQuantize:
         # real corpus, which sits near 10% shade characters: bias 1.0 gave 75%
         # (the whole canvas dithered), 0.35 gave 54%.
         bias = {"none": 0.0, "light": 0.10, "medium": 0.35, "full": 1.0}[shading]
-        ch, fg, bg, cnt, _ = match_cells(patches, chars, pal, ice=ice_colors,
-                                         dither=dither, cols=cols,
-                                         strength=dither_strength,
-                                         shade_blend=bias > 0, shade_bias=bias,
-                                         allow=parse_colors(colors),
-                                         cell_h=cell_h, cell_w=cell_w)
+        depth = str(depth)
+
+        if depth == "16":
+            ch, fg, bg, cnt, _ = match_cells(patches, chars, pal, ice=ice_colors,
+                                             dither=dither, cols=cols,
+                                             strength=dither_strength,
+                                             shade_blend=bias > 0, shade_bias=bias,
+                                             allow=parse_colors(colors),
+                                             cell_h=cell_h, cell_w=cell_w)
+            render_pal = pal.astype(np.uint8)
+        else:
+            # Deep colour: the palette is no longer the bottleneck, so the
+            # 16-colour machinery that exists to work around it — error
+            # diffusion, shade blends, --colors steering — has nothing left to
+            # buy. Shades still get PICKED when they genuinely fit the pixels;
+            # they just aren't forced in to fake a colour we can't name.
+            deep_pal = (np.asarray(xterm256_palette(pal.astype(np.uint8)),
+                                   np.float64) if depth == "256" else None)
+            ch, fg, bg, cnt = match_cells_deep(patches, chars, depth=depth,
+                                               pal=deep_pal,
+                                               cell_h=cell_h, cell_w=cell_w)
+            render_pal = None if depth == "rgb" else deep_pal.astype(np.uint8)
 
         ch = ch.reshape(rows, cols).astype(np.uint8)
-        fg = fg.reshape(rows, cols).astype(np.uint8)
-        bg = bg.reshape(rows, cols).astype(np.uint8)
+        cshape = (rows, cols, 3) if depth == "rgb" else (rows, cols)
+        fg = fg.reshape(cshape).astype(np.uint8)
+        bg = bg.reshape(cshape).astype(np.uint8)
         cnt = cnt.reshape(rows, cols)
 
         # Tidy the degenerate cases so the .ANS is clean: a full block has no
         # visible background, a blank has no visible foreground.
         bg[cnt >= cell_h * cell_w] = 0
-        fg[cnt <= 0] = 7
+        fg[cnt <= 0] = 0 if depth == "rgb" else 7
         if force_black_bg:
             # Re-solve with background pinned to black — the look of a lot of
             # BBS-era work, where the canvas was simply the terminal.
             bg[:] = 0
 
         # --- 4. render the cells back out -------------------------------------
-        out = render_cells(ch, fg, bg, pal.astype(np.uint8),
-                           cell_h=cell_h, cell_w=cell_w)
+        out = (render_cells_rgb(ch, fg, bg, cell_h=cell_h, cell_w=cell_w)
+               if depth == "rgb" else
+               render_cells(ch, fg, bg, render_pal, cell_h=cell_h, cell_w=cell_w))
         img = Image.fromarray(out, "RGB")
         if scale > 1:
             # Integer nearest-neighbour only. The PNG stays a faithful picture
@@ -510,7 +629,7 @@ class AnsiQuantize:
                                       preview.height * view_scale), Image.NEAREST)
 
         cells = ansi_fmt.pack_cells(ch, fg, bg, pal.astype(np.uint8), ice_colors,
-                                    cell_h=cell_h, cell_w=cell_w)
+                                    cell_h=cell_h, cell_w=cell_w, depth=depth)
         return (_pil_to_tensor(img), _pil_to_tensor(preview),
                 base64.b64encode(cells).decode("ascii"))
 
@@ -548,6 +667,7 @@ class SaveAnsi:
                 "sauce": ("BOOLEAN", {"default": True}),
                 "xb_compress": ("BOOLEAN", {"default": True}),
                 "xb_embed_font": ("BOOLEAN", {"default": True}),
+                "rgb_dialect": (["pablo", "xterm"], {"default": "pablo"}),
             },
         }
 
@@ -557,14 +677,26 @@ class SaveAnsi:
     OUTPUT_NODE = True
 
     def save(self, cells_b64, filename_prefix, format="ans", title="", author="",
-             group="", date="", sauce=True, xb_compress=True, xb_embed_font=True):
-        ch, fg, bg, pal, ice, cell_h, cell_w = ansi_fmt.unpack_cells(
+             group="", date="", sauce=True, xb_compress=True, xb_embed_font=True,
+             rgb_dialect="pablo"):
+        ch, fg, bg, pal, ice, cell_h, cell_w, depth = ansi_fmt.unpack_cells(
             base64.b64decode(cells_b64))
         rows, cols = ch.shape
 
+        # XBin's attribute byte is four bits of foreground and four of
+        # background — there is no room for an index above 15, let alone 24
+        # bits, and no extension slot to put one in. Deep colour is .ANS only.
+        if depth != "16" and format in ("xb", "both"):
+            raise ValueError(
+                f"depth {depth} cannot be written to XBin: its attribute byte "
+                f"holds a 4-bit colour index. Use format 'ans', or depth '16' "
+                f"with a custom palette, which .xb embeds exactly.")
+
         blobs = {}
         if format in ("ans", "both"):
-            body = ansi_fmt.to_ans(ch, fg, bg, ice=ice)
+            fb = (rgb_fallback(fg, bg, pal, ice) if depth == "rgb" else None)
+            body = ansi_fmt.to_ans(ch, fg, bg, ice=ice, depth=depth,
+                                   dialect=rgb_dialect, fallback=fb)
             if sauce:
                 body += b"\x1a" + ansi_fmt.sauce_record(
                     len(body), cols, rows, title, author, group, date, ice,

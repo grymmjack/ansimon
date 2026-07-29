@@ -185,6 +185,71 @@ the correct DataType — 1/1 for ANSi, 6/0 for XBin):
 ansimon "a rune" --format both --title "Rune" --author grymmjack --group ansimon
 ```
 
+### `--depth` — 16, 256 or 24-bit colour
+
+The 16 ANSI attributes are a hardware limit from 1981, and `.ANS` has quietly
+outgrown them twice. Both extensions are `--depth` away:
+
+```bash
+ansimon "a neon city street at night"                    # 16 — the classic
+ansimon "a neon city street at night" --depth 256        # xterm indexed
+ansimon "a neon city street at night" --truecolor        # 24-bit RGB
+```
+
+Measured on one 80×40 render, same prompt and seed, mean per-channel distance
+from the picture the model actually drew:
+
+| depth | escape | colours | error | `.ans` |
+|-------|--------|--------:|------:|-------:|
+| `16`  | `ESC[1;36;44m` | 16 | 34.5 | 26.8 KB |
+| `256` | `ESC[38;5;n;48;5;nm` | 224 | 17.1 | 59.3 KB |
+| `rgb` | `ESC[1;r;g;bt` | 6082 | 6.6 | 122.4 KB |
+
+The error roughly halves at each step, for about 2× the bytes.
+
+**Why it gets better, and it isn't just "more colours".** At 16 colours the
+matcher spends the glyph on *colour*: a shade character exists to fake a tone
+that isn't in the palette. With the palette gone that job disappears, so the
+glyph goes back to describing **shape** and the two colours come out exact.
+That is why `--dither`, `--shading` and `--colors` are ignored at depth 256 and
+`rgb` — all three exist to work around a 16-colour palette, and there isn't
+one. ansimon tells you when it drops them.
+
+**`--depth rgb` is the general case of the half-block trick.** With a charset
+of just `▀`, the glyph covers the top half of the cell, so the foreground is
+exactly the top pixel and the background exactly the bottom one — a lossless
+image at `cols × 2·rows`, which is what
+[IMG2ANS](https://github.com/grymmjack/img2ans) does. Allowing the full charset
+lets a glyph edge follow a diagonal, which a half block cannot, so it can only
+do better.
+
+**Two dialects.** `--rgb-dialect pablo` (the default) writes
+`ESC[1;r;g;bt` / `ESC[0;r;g;bt` — the PabloDraw / SyncTERM scene extension,
+terminated with `t`, not the `m` you might expect. It is what PabloDraw and
+IMG2ANS emit and what the scene reads. A 16-colour SGR attribute is written
+underneath each one, exactly as PabloDraw's own files do, so anything that
+ignores the extension still shows recognisable art instead of one flat colour.
+`--rgb-dialect xterm` writes `ESC[38;2;r;g;bm` instead, which terminals prefer
+and which is ~18% smaller (no fallback to carry).
+
+> **Deep colour is `.ans` only.** XBin's attribute byte is four bits of
+> foreground and four of background — there is no room for an index above 15,
+> let alone 24 bits, and no extension slot to put one in. `--depth 256` or `rgb`
+> with `--format xb` is refused rather than silently written wrong. If you want
+> non-standard colours in a file **Moebius and PabloDraw can edit**, that is
+> `--depth 16 --palette NAME --format xb`: XBin embeds all 16 exactly.
+
+Two things worth knowing before you ship a deep-colour file:
+
+* **256 is not a palette you choose.** `ESC[38;5;n` selects the *viewer's*
+  table, so ansimon targets the xterm-256 standard. Indices 0–15 are the
+  viewer's own 16 ANSI colours, and ansimon writes them in **SGR order**
+  (1 = red, 4 = blue), not the VGA attribute order the rest of the codebase
+  uses. Getting that backwards turns every red blue — see *Gotchas*.
+* **A custom palette belongs at `rgb`, not `256`.** `--depth rgb --palette
+  "Commodore 64"` writes those exact RGB values, so the colours are right in
+  any viewer that speaks the extension — no dependence on the viewer's table.
+
 ### `--from-ans` — read art ansimon didn't make
 
 ansimon already owns a CP437 glyph table, a renderer, an XBin writer and a
@@ -405,6 +470,21 @@ works in every viewer ever made.
 
 **`--fast` is genuinely rough.** 8 LCM steps at cfg 1.8. Use it to explore
 seeds, then re-run the good one without `--fast`.
+
+**Two colour orders, and mixing them up is the bug that keeps coming back.**
+CGA/VGA attribute order runs the RGB bits the opposite way from ANSI's SGR
+order, so index 1 is blue as an attribute and red in an escape code
+(`CGA_TO_SGR = (0,4,2,6,1,5,3,7)`, its own inverse). It has now cost this
+project twice: once as a straight fg/bg swap (38.8% of pixels wrong), and again
+in `--depth 256`, where `ESC[38;5;n` counts in SGR order for n < 16 while the
+palette table is in attribute order (2.72% wrong — small enough to look fine in
+a screenshot). Anything that writes a colour *number* into a stream needs to
+say which order it means. `tools/verify-depth.py` catches both.
+
+**AMD gfx1032 needs `HSA_OVERRIDE_GFX_VERSION=10.3.0`.** ROCm ships no kernels
+for that arch, so without the override ComfyUI dies with `HIP error: invalid
+device function` partway into loading a LoRA. Export it before starting
+ComfyUI, not in ansimon — it has to be in the server's environment.
 
 ---
 

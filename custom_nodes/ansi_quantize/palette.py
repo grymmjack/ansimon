@@ -135,6 +135,50 @@ ALL_PALETTES_FULL = {**{k: list(v) for k, v in BUILTIN.items()}, **_FOUND}
 ALL_PALETTES = {**BUILTIN, **{k: _to16(v) for k, v in _FOUND.items()}}
 
 
+# ---------------------------------------------------------------------------
+# xterm-256, for `--depth 256`.
+#
+# A .ANS carries no palette, so `ESC[38;5;n` means whatever the VIEWER thinks
+# index n is — and for 0-15 that is its own 16-colour ANSI palette. Building
+# our table with the chosen 16 in those slots keeps ansimon's PNG and a viewer
+# agreeing wherever the two 16-colour palettes agree, which for the default
+# `ansi` palette is everywhere. 16-255 are fixed by the standard: a 6x6x6 RGB
+# cube on non-linear levels, then 24 greys.
+#
+# The low 16 are REORDERED on the way in, because `38;5;n` counts in SGR order
+# (1 = red, 4 = blue) while `ANSI16` is in VGA attribute order (1 = blue,
+# 4 = red). Skip that and every red in the picture comes out blue — the same
+# CGA-vs-SGR swap that once put 38.8% of the pixels wrong, wearing a different
+# hat. The mapping is imported rather than restated for exactly that reason.
+# ---------------------------------------------------------------------------
+CUBE_LEVELS = (0, 95, 135, 175, 215, 255)
+
+
+def xterm256_palette(base16=None):
+    """256 (r,g,b) tuples: the given 16 ANSI colours, then the cube and greys.
+
+    Entry `j` is the colour a viewer shows for `ESC[38;5;j`, so entries 0-15
+    are `base16` permuted from attribute order into SGR order.
+    """
+    from .ansi import SGR_TO_CGA          # local: keeps the modules acyclic
+
+    # `if base16 is None`, not `base16 or ANSI16`: callers pass numpy arrays,
+    # and truth-testing one raises.
+    src = [tuple(int(v) for v in c)
+           for c in (ANSI16 if base16 is None else base16)][:16]
+    while len(src) < 16:
+        src.append(src[-1])
+    pal = [src[(j & 8) | SGR_TO_CGA[j & 7]] for j in range(16)]
+    for i in range(216):
+        pal.append((CUBE_LEVELS[i // 36],
+                    CUBE_LEVELS[(i // 6) % 6],
+                    CUBE_LEVELS[i % 6]))
+    for i in range(24):
+        v = 8 + i * 10
+        pal.append((v, v, v))
+    return pal
+
+
 def parse_palette(name, custom_hex=""):
     """Resolve a palette name (or 'Custom' + hex list) to 16 (r,g,b) tuples."""
     if name == "Custom":

@@ -56,19 +56,28 @@ FILETYPE_ANSI = 1
 # emit pre-serialised bytes, it emits the CELLS and lets the saver decide. One
 # source of truth, and adding a new output format never touches the quantizer.
 # ---------------------------------------------------------------------------
-CELLS_MAGIC = b"ACEL\x02"
+CELLS_MAGIC = b"ACEL\x03"
+_DEPTH_CODE = {"16": 0, "256": 1, "rgb": 2}
+_CODE_DEPTH = {v: k for k, v in _DEPTH_CODE.items()}
 
 
-def pack_cells(ch, fg, bg, palette, ice, cell_h=16, cell_w=8):
-    """Cell grid + palette -> compact bytes for the ComfyUI STRING channel."""
+def pack_cells(ch, fg, bg, palette, ice, cell_h=16, cell_w=8, depth="16"):
+    """Cell grid + palette -> compact bytes for the ComfyUI STRING channel.
+
+    At depth `rgb` the fg/bg planes are (rows, cols, 3) instead of (rows, cols),
+    so the blob is three times as wide there. Only the 16 base colours travel:
+    the 256-colour table is derived from them, and truecolor needs no table.
+    """
     ch = np.asarray(ch, np.uint8)
     rows, cols = ch.shape
+    depth = str(depth)
     out = bytearray(CELLS_MAGIC)
     out += int(cols).to_bytes(2, "little")
     out += int(rows).to_bytes(2, "little")
     out.append(1 if ice else 0)
     out.append(int(cell_h) & 0xFF)
     out.append(int(cell_w) & 0xFF)
+    out.append(_DEPTH_CODE[depth])
     for r, g, b in list(palette)[:16]:
         out += bytes((int(r) & 0xFF, int(g) & 0xFF, int(b) & 0xFF))
     out += ch.tobytes()
@@ -78,21 +87,25 @@ def pack_cells(ch, fg, bg, palette, ice, cell_h=16, cell_w=8):
 
 
 def unpack_cells(data):
-    """Inverse of pack_cells -> (ch, fg, bg, palette, ice)."""
+    """Inverse of pack_cells -> (ch, fg, bg, palette, ice, cell_h, cell_w, depth)."""
     if data[:5] != CELLS_MAGIC:
         raise ValueError("not an ansimon cell blob")
     cols = int.from_bytes(data[5:7], "little")
     rows = int.from_bytes(data[7:9], "little")
     ice = bool(data[9])
     cell_h, cell_w = int(data[10]), int(data[11])
-    base = 12
+    depth = _CODE_DEPTH[data[12]]
+    base = 13
     pal = [tuple(data[base + i * 3:base + 3 + i * 3]) for i in range(16)]
     n = rows * cols
     off = base + 48
-    a = np.frombuffer(data, np.uint8, count=n * 3, offset=off)
+    w = 3 if depth == "rgb" else 1
+    a = np.frombuffer(data, np.uint8, count=n * (1 + 2 * w), offset=off)
+    shape = (rows, cols, 3) if depth == "rgb" else (rows, cols)
     return (a[:n].reshape(rows, cols).copy(),
-            a[n:2 * n].reshape(rows, cols).copy(),
-            a[2 * n:].reshape(rows, cols).copy(), pal, ice, cell_h, cell_w)
+            a[n:n + n * w].reshape(shape).copy(),
+            a[n + n * w:].reshape(shape).copy(),
+            pal, ice, cell_h, cell_w, depth)
 
 
 def _sgr(fg, bg, ice):
@@ -107,7 +120,134 @@ def _sgr(fg, bg, ice):
     return f"{ESC}[" + ";".join(parts) + "m"
 
 
-def to_ans(ch, fg, bg, ice=False, width=None, trim_trailing=True):
+# ---------------------------------------------------------------------------
+# Colour depth: how a cell's two colours get written into the stream.
+#
+# The three encoders below all answer the same two questions — "what attribute
+# does this cell want" and "what bytes select it" — so `to_ans` can stay a
+# single function. That matters more than it looks: the deferred-wrap handling
+# in `to_ans` took three bugs to get right, and forking it per colour depth
+# would have been three chances to get it wrong again.
+#
+#   16   ESC[1;36;44m          the ANSI.SYS dialect every viewer speaks
+#   256  ESC[38;5;n;48;5;nm    xterm indexed; the low 16 are the VIEWER's
+#   rgb  ESC[1;r;g;bt          PabloDraw/SyncTERM 24-bit — sel 1 = fg, 0 = bg
+#
+# The 24-bit form uses `t`, not `m`. That is not a typo and not xterm's
+# `38;2;r;g;b` — it is the scene's own extension, which is what PabloDraw
+# writes and what IMG2ANS emits. We write an SGR approximation alongside it so
+# a viewer that ignores `t` still shows recognisable art instead of one colour.
+# ---------------------------------------------------------------------------
+DEPTHS = ("16", "256", "rgb")
+
+
+class _Attr16:
+    """Classic 16-colour attributes. fg/bg are palette indices 0-15."""
+    kind = "16"
+
+    def __init__(self, fg, bg, ice=False):
+        self.fg, self.bg, self.ice = fg, bg, ice
+
+    def key(self, y, x):
+        return int(self.fg[y][x]), int(self.bg[y][x])
+
+    def blank_bg(self, y, x):
+        return int(self.bg[y][x]) == 0
+
+    def space_fg(self, key, cur):
+        # A space shows only its background, so reuse the live foreground and
+        # avoid an attribute change that would buy nothing.
+        return (cur[0], key[1]) if cur else key
+
+    def seq(self, key, cur):
+        f, b = key
+        out = b""
+        # There is no "unbold" in this dialect, so dropping a bright colour
+        # means a full reset before re-selecting.
+        if cur is not None and (cur[0] >= 8 > f or (self.ice and cur[1] >= 8 > b)):
+            out += f"{ESC}[0m".encode("ascii")
+        return out + _sgr(f, b, self.ice).encode("ascii")
+
+
+class _Attr256:
+    """xterm indexed colour. fg/bg are indices 0-255, backgrounds unrestricted."""
+    kind = "256"
+
+    def __init__(self, fg, bg, **_):
+        self.fg, self.bg = fg, bg
+
+    def key(self, y, x):
+        return int(self.fg[y][x]), int(self.bg[y][x])
+
+    def blank_bg(self, y, x):
+        return int(self.bg[y][x]) == 0
+
+    def space_fg(self, key, cur):
+        return (cur[0], key[1]) if cur else key
+
+    def seq(self, key, cur):
+        # Every sequence is absolute, so no reset dance is needed.
+        return f"{ESC}[38;5;{key[0]};48;5;{key[1]}m".encode("ascii")
+
+
+class _AttrRGB:
+    """24-bit colour. fg/bg are (rows, cols, 3) uint8 arrays.
+
+    `dialect` picks the wire format: `pablo` writes the scene's `ESC[<sel>;r;g;bt`
+    pair (plus a 16-colour SGR fallback), `xterm` writes `ESC[38;2;r;g;bm`.
+
+    `fallback` is the `(fg_map, bg_map)` pair from `nodes.rgb_fallback` — RGB
+    tuple to nearest 16-colour index, one table per plane.
+    """
+    kind = "rgb"
+
+    def __init__(self, fg, bg, dialect="pablo", fallback=None, ice=True, **_):
+        self.fg = np.asarray(fg, np.uint8)
+        self.bg = np.asarray(bg, np.uint8)
+        self.dialect = dialect
+        self.ice = ice
+        # Nearest 16-colour index per cell, for the SGR fallback. Computed by
+        # the caller against whatever palette the piece was built for.
+        self.fallback = fallback
+
+    def key(self, y, x):
+        return (tuple(int(v) for v in self.fg[y][x]),
+                tuple(int(v) for v in self.bg[y][x]))
+
+    def blank_bg(self, y, x):
+        return not self.bg[y][x].any()
+
+    def space_fg(self, key, cur):
+        return (cur[0], key[1]) if cur else key
+
+    def seq(self, key, cur):
+        (fr, fg_, fb), (br, bg_, bb) = key
+        if self.dialect == "xterm":
+            return (f"{ESC}[38;2;{fr};{fg_};{fb};"
+                    f"48;2;{br};{bg_};{bb}m").encode("ascii")
+        out = b""
+        if self.fallback is not None:
+            fmap, bmap = self.fallback
+            f16, b16 = fmap.get(key[0]), bmap.get(key[1])
+            if f16 is not None and b16 is not None:
+                out += _sgr(f16, b16, self.ice).encode("ascii")
+        return (out
+                + f"{ESC}[1;{fr};{fg_};{fb}t".encode("ascii")
+                + f"{ESC}[0;{br};{bg_};{bb}t".encode("ascii"))
+
+
+def make_attr(fg, bg, depth="16", ice=False, dialect="pablo", fallback=None):
+    """Pick the encoder for a colour depth."""
+    depth = str(depth)
+    if depth == "256":
+        return _Attr256(fg, bg)
+    if depth == "rgb":
+        return _AttrRGB(fg, bg, dialect=dialect, fallback=fallback, ice=ice)
+    return _Attr16(fg, bg, ice=ice)
+
+
+def to_ans(ch, fg, bg, ice=False, width=None, trim_trailing=True,
+           depth="16", dialect="pablo", fallback=None):
     """Serialise a cell grid to `.ANS` bytes (CP437, no SAUCE record).
 
     Attribute changes are emitted only when they actually change, which is
@@ -124,13 +264,13 @@ def to_ans(ch, fg, bg, ice=False, width=None, trim_trailing=True):
     than your own code.
     """
     ch = np.asarray(ch, np.uint8)
-    fg = np.asarray(fg, np.uint8)
-    bg = np.asarray(bg, np.uint8)
+    at = make_attr(np.asarray(fg), np.asarray(bg), depth=depth, ice=ice,
+                   dialect=dialect, fallback=fallback)
     rows, cols = ch.shape
     width = width or cols
 
     out = bytearray()
-    cur = None                                   # currently-active (fg, bg)
+    cur = None                                   # currently-active attribute
 
     # A full-width FINAL row is the one case auto-wrap cannot express. Writing
     # its last column leaves the terminal in a pending wrap, and a renderer
@@ -145,44 +285,44 @@ def to_ans(ch, fg, bg, ice=False, width=None, trim_trailing=True):
         end_last = cols
         if trim_trailing:
             while end_last > 0 and lr[end_last - 1] in (0x00, 0x20) \
-                    and bg[rows - 1][end_last - 1] == 0:
+                    and at.blank_bg(rows - 1, end_last - 1):
                 end_last -= 1
         if end_last == cols:
             c = int(lr[cols - 1]) or 0x20
-            f, b = int(fg[rows - 1][cols - 1]), int(bg[rows - 1][cols - 1])
+            k = at.key(rows - 1, cols - 1)
             out += f"{ESC}[{rows};{cols}H".encode("ascii")
-            out += _sgr(f, b, ice).encode("ascii")
+            out += at.seq(k, None)
             out.append(c)
             out += f"{ESC}[H".encode("ascii")
-            cur = (f, b)
+            cur = k
             last_cell = (rows - 1, cols - 1)
 
     for y in range(rows):
-        row_ch, row_fg, row_bg = ch[y], fg[y], bg[y]
+        row_ch = ch[y]
 
         # Trailing run of blank-on-black costs nothing to omit — the newline
         # gets us to the next row anyway.
         end = cols
         if trim_trailing:
-            while end > 0 and row_ch[end - 1] in (0x00, 0x20) and row_bg[end - 1] == 0:
+            while end > 0 and row_ch[end - 1] in (0x00, 0x20) \
+                    and at.blank_bg(y, end - 1):
                 end -= 1
 
         for x in range(end):
             if last_cell == (y, x):
                 break                            # already placed, and printing
                                                  # it again would re-arm the wrap
-            c, f, b = int(row_ch[x]), int(row_fg[x]), int(row_bg[x])
+            c = int(row_ch[x])
             if c == 0x00:
                 c = 0x20                          # never write a raw NUL
+            k = at.key(y, x)
             # A space shows only its background, so its foreground is free —
             # inheriting the current fg avoids a pointless attribute change.
             if c == 0x20 and cur is not None:
-                f = cur[0]
-            if cur != (f, b):
-                if cur is not None and (cur[0] >= 8 > f or (ice and cur[1] >= 8 > b)):
-                    out += f"{ESC}[0m".encode("ascii")
-                out += _sgr(f, b, ice).encode("ascii")
-                cur = (f, b)
+                k = at.space_fg(k, cur)
+            if cur != k:
+                out += at.seq(k, cur)
+                cur = k
             out.append(c)
 
         # end < cols means the row stopped short, so it needs an explicit
@@ -245,9 +385,11 @@ def sauce_record(data_len, cols, rows, title="", author="", group="",
 
 
 def write_ans(path, ch, fg, bg, ice=False, sauce=True, title="", author="",
-              group="", date="", aspect_square=True, cell_h=16):
+              group="", date="", aspect_square=True, cell_h=16,
+              depth="16", dialect="pablo", fallback=None):
     """Write a complete `.ANS` file (art + EOF marker + SAUCE)."""
-    body = to_ans(ch, fg, bg, ice=ice)
+    body = to_ans(ch, fg, bg, ice=ice, depth=depth, dialect=dialect,
+                  fallback=fallback)
     with open(path, "wb") as f:
         f.write(body)
         if sauce:

@@ -152,6 +152,12 @@ def print_help():
 {opt('--dither-strength N', 'damping, 0-1. lower = less colour noise', '0.75')}
 {opt('--ice / --no-ice', 'iCE colours: 16 backgrounds, no blink', 'on')}
 {opt('--colors LIST', "restrict palette, e.g. '3,8,15,11'")}
+{opt('--depth D', '16 | 256 | rgb — colour depth', '16')}
+{opt('', '256 and rgb drop the palette entirely: the glyph is')}
+{opt('', 'picked for SHAPE and the colours come out exact.')}
+{opt('', '.ans only — XBin has 4 bits of colour per cell.')}
+{opt('--truecolor', 'shorthand for --depth rgb')}
+{opt('--rgb-dialect D', 'pablo (ESC[1;r;g;bt) | xterm (38;2)', 'pablo')}
 {opt('--shading LEVEL', 'none | light | medium | full', 'light')}
 {opt('--vga50', '8x8 cell instead of 8x16 (twice the rows)')}
 {opt('--font-9px', '9-dot VGA cell (box rules join)')}
@@ -437,6 +443,7 @@ def build_graph(a, seed, subject=None, server=None):
                           "ice_colors": a.ice, "dither": a.dither,
                           "dither_strength": a.dither_strength,
                           "colors": a.colors, "shading": a.shading,
+                          "depth": a.depth,
                           "cell_height": 8 if a.vga50 else 16,
                           "cell_width": 9 if a.font_9px else 8,
                           "smooth": a.smooth, "pixel_grid": a.pixel_grid,
@@ -467,7 +474,8 @@ def build_graph(a, seed, subject=None, server=None):
                               "group": a.group, "date": a.date,
                               "sauce": not a.no_sauce,
                               "xb_compress": not a.no_compress,
-                              "xb_embed_font": not a.no_embed_font}}
+                              "xb_embed_font": not a.no_embed_font,
+                              "rgb_dialect": a.rgb_dialect}}
 
     model_src, clip_src = _chain_loras(a, g)
     g["6"]["inputs"]["clip"] = clip_src
@@ -534,23 +542,60 @@ def submit(graph, server=None, raising=False):
         sys.exit(msg)
 
 
+def node_error(entry):
+    """A failed /history entry -> a one-line reason, or None if it didn't fail.
+
+    A node that raises still lands in `/history`, just with `outputs` empty and
+    a status of "error". Testing only for outputs therefore cannot tell "still
+    running" from "died on the first node", so a broken graph polls until the
+    timeout — ten minutes of silence for a one-line exception. Read the status.
+    """
+    st = (entry or {}).get("status") or {}
+    if st.get("status_str") != "error" and st.get("completed") is not False:
+        return None
+    for kind, info in st.get("messages") or []:
+        if kind == "execution_error":
+            where = info.get("node_type") or info.get("node_id") or "?"
+            return (f"{where}: {info.get('exception_type', '')} "
+                    f"{info.get('exception_message', '')}".strip())
+    if st.get("status_str") == "error":
+        return "the graph failed, but ComfyUI reported no detail"
+    return None
+
+
+def _history(pid, server):
+    with urllib.request.urlopen(f"{server}/history/{pid}", timeout=30) as r:
+        return json.loads(r.read()).get(pid)
+
+
 def wait(pid, server=None, timeout=900):
     server = server or SERVER
     for _ in range(timeout):
-        with urllib.request.urlopen(f"{server}/history/{pid}", timeout=30) as r:
-            hist = json.loads(r.read())
-        if pid in hist and hist[pid].get("outputs"):
-            return hist[pid]["outputs"]
+        entry = _history(pid, server)
+        if entry:
+            if entry.get("outputs"):
+                return entry["outputs"]
+            why = node_error(entry)
+            if why:
+                sys.exit(f"ComfyUI failed to run the graph — {why}")
         time.sleep(1)
     sys.exit("Timed out waiting for the art.")
 
 
 def poll(pid, server):
-    """One non-blocking /history check; returns the outputs dict, or None if not ready."""
-    with urllib.request.urlopen(f"{server}/history/{pid}", timeout=30) as r:
-        hist = json.loads(r.read())
-    if pid in hist and hist[pid].get("outputs"):
-        return hist[pid]["outputs"]
+    """One non-blocking /history check; returns the outputs dict, or None if not ready.
+
+    Raises SubmitError when the graph failed, so the farm can retire the job
+    instead of waiting on a render that is never coming.
+    """
+    entry = _history(pid, server)
+    if not entry:
+        return None
+    if entry.get("outputs"):
+        return entry["outputs"]
+    why = node_error(entry)
+    if why:
+        raise SubmitError(f"ComfyUI failed to run the graph — {why}")
     return None
 
 
@@ -655,6 +700,14 @@ def run_farm(a, work):
         for srv, (subj, seed, d, pid) in list(inflight.items()):
             try:
                 outs = poll(pid, srv)
+            except SubmitError as e:
+                # The graph itself is wrong, so every other GPU would fail the
+                # same way. Requeueing would just walk the farm failing
+                # identically; drop it and say why.
+                print(f"   ❌ {_short(srv)} {e}")
+                del inflight[srv]
+                advanced = True
+                continue
             except Exception:
                 print(f"   ⚠ {_short(srv)} unreachable — requeueing its job")
                 pending.append((subj, seed, d))
@@ -738,6 +791,21 @@ def main():
                         "'3,8,15,11' for cyan/grey/white/bright-cyan. Black (0) "
                         "is always kept as the canvas. Great for locking a whole "
                         "tileset to one scheme.")
+    p.add_argument("--depth", default="16", choices=["16", "256", "rgb"],
+                   help="colour depth. 16 is the classic ANSI attribute set and "
+                        "the only one .xb can carry. 256 writes xterm indexed "
+                        "colour, rgb writes 24-bit — both are .ans only, and "
+                        "both drop the palette constraint entirely, so the "
+                        "glyph is chosen for SHAPE and the colours come out "
+                        "exact. default 16")
+    p.add_argument("--truecolor", dest="depth", action="store_const", const="rgb",
+                   help="shorthand for --depth rgb")
+    p.add_argument("--rgb-dialect", dest="rgb_dialect", default="pablo",
+                   choices=["pablo", "xterm"],
+                   help="how 24-bit colour is written. 'pablo' is the scene "
+                        "extension ESC[1;r;g;bt that PabloDraw and IMG2ANS use, "
+                        "with a 16-colour SGR fallback underneath; 'xterm' is "
+                        "ESC[38;2;r;g;bm, which terminals prefer. default pablo")
     p.add_argument("--font-9px", dest="font_9px", action="store_true",
                    help="9-dot VGA cell — the 9th column repeats column 8 for "
                         "codes 0xC0-0xDF so box rules join, exactly as VGA text "
@@ -867,10 +935,36 @@ def main():
         sys.exit("--ans-only with no art format would write nothing at all.")
     # .ANS carries no width field, so a non-80-column canvas is only reliably
     # reopenable as XBin — which is why XBin becomes the default off 80 columns.
-    if a.cols != 80 and a.format == "ans" and "--format" not in sys.argv:
+    if (a.cols != 80 and a.format == "ans" and "--format" not in sys.argv
+            and a.depth == "16"):
         a.format = "both"
         print(f"   {C['dim']}{a.cols} columns: writing .xb as well, since .ans "
               f"has no width field{C['rst']}")
+
+    # XBin's attribute byte is 4 bits of foreground; it cannot hold an index
+    # above 15, so 256 and rgb are .ans only. Say so rather than writing a .xb
+    # full of quietly wrong colours.
+    if a.depth != "16":
+        if a.format in ("xb", "both"):
+            sys.exit(f"--depth {a.depth} cannot be written to XBin — its "
+                     f"attribute byte is a 4-bit colour index. Use --format ans, "
+                     f"or --depth 16 with --palette, which .xb embeds exactly.")
+        if a.dither or a.shading != "none" or a.colors:
+            # These all exist to squeeze more apparent colour out of 16
+            # attributes. With the palette gone they have nothing left to do.
+            note = []
+            if a.dither:
+                note.append("--dither")
+                a.dither = False
+            if a.colors:
+                note.append("--colors")
+                a.colors = ""
+            if a.shading != "none":
+                note.append("--shading")
+                a.shading = "none"
+            print(f"   {C['dim']}--depth {a.depth}: ignoring "
+                  f"{', '.join(note)} — those work around the 16-colour "
+                  f"palette, and there isn't one now{C['rst']}")
 
     # --- defaults that depend on --fast -----------------------------------
     if a.steps is None:

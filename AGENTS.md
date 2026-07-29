@@ -79,6 +79,19 @@ order (black, blue, green, cyan, red, magenta, brown, grey, then brights).
 Index 9 *means* "bright blue" to every viewer; a palette only changes the RGB it
 maps to. Reject palettes that aren't exactly 16.
 
+**6. Deep colour never reaches XBin.** `--depth 256` and `rgb` are `.ans` only.
+XBin's attribute byte is 4 bits of foreground and 4 of background, with no
+extension slot, so there is nowhere to put an index above 15. Both `SaveAnsi`
+and the CLI refuse the combination — do not "helpfully" downconvert instead,
+because a `.xb` that silently holds different colours from the PNG breaks
+invariant 1.
+
+**7. `to_ans()` stays ONE function across all three depths.** Colour depth is a
+pluggable attribute encoder (`_Attr16` / `_Attr256` / `_AttrRGB` in ansi.py),
+not a forked writer. The deferred-wrap handling took three bugs to get right;
+forking it per depth would be three fresh chances to get it wrong. Add a depth
+by adding an encoder — `key`, `blank_bg`, `space_fg`, `seq` — and nothing else.
+
 ## Testing
 
 There is no test suite yet. What exists is a set of round-trip checks that
@@ -388,11 +401,31 @@ mistake. "Bit-exact round trip" proved self-consistency, not correctness.
      disagreed with the font. `vga8x16.bin` is now extracted from pixelview's
      own font by `tools/extract-font.py`.
 
+  4. **CGA vs SGR, again, in `--depth 256`.** `ESC[38;5;n` counts in SGR order
+     for n < 16, so building the 256-entry table with `ANSI16` (attribute order)
+     in slots 0-15 rendered every red as blue. Only 2.72% of pixels differed —
+     small enough to pass a look at a screenshot, which is the point.
+     `xterm256_palette()` permutes those 16 through `SGR_TO_CGA`.
+
+Note that (2) and (4) are the *same bug* eight months apart. Any code that
+writes a colour **number** into a stream has to declare which order it means.
+
 The standing check, which must stay at 0 differing pixels:
+
+    python3 tools/verify-depth.py       # all depths + both RGB dialects
+
+That covers a synthetic image with gradients, flat fields and hard diagonals at
+every depth. For a real render:
 
     ansimon "..." --output-to /tmp/t
     pixelview --render /tmp/t/*.ans -o /tmp/t/pv.png
     # compare /tmp/t/*_ansi_*.png against pv.png
+
+**Feed the tests the types the real caller passes.** `verify-depth.py` first
+handed `xterm256_palette()` a Python list while the node passes a numpy array,
+so it sailed past a `base16 or ANSI16` truth-test that raised on *every* real
+256 render. A test that exercises a different type than production is not
+testing production.
 
 ## Defaults, and why
 
