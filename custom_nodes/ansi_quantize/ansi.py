@@ -313,8 +313,15 @@ def to_ans(ch, fg, bg, ice=False, width=None, trim_trailing=True,
                 break                            # already placed, and printing
                                                  # it again would re-arm the wrap
             c = int(row_ch[x])
-            if c == 0x00:
-                c = 0x20                          # never write a raw NUL
+            if c < 0x20:
+                # Control codes are valid CP437 glyphs but not valid stream
+                # bytes: 0x1B would start an escape sequence, 0x1A would end
+                # the art. The quantizer already refuses to pick them (see
+                # cp437.STREAM_UNSAFE), so reaching here means the cells came
+                # from elsewhere — an XBin via --from-ans can legitimately hold
+                # them. Substituting a space loses that glyph, which is the only
+                # option a .ANS leaves; the .xb keeps it intact.
+                c = 0x20
             k = at.key(y, x)
             # A space shows only its background, so its foreground is free —
             # inheriting the current fg avoids a pointless attribute change.

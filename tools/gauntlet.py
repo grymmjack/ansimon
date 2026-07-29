@@ -301,9 +301,17 @@ def verify(c):
 
         diff = int((theirs != mine).any(-1).sum())
         if ext == ".ans" and not faithful:
-            # Geometry and cell count are still meaningful; the RGB is not ours
-            # to dictate. Record it as informational rather than pass/fail.
-            results.append((ext + "*", 0, ""))
+            # The RGB is not ours to dictate here, but the LAYOUT still is. An
+            # earlier version of this check passed unconditionally and thereby
+            # masked a real bug: `--charset full` was emitting 0x1B as a glyph,
+            # corrupting the stream, on a case whose palette made it exempt.
+            # So compare ink coverage — which pixels are background — because
+            # stream corruption moves ink even when it cannot move colour.
+            ink_m = (mine != mine[0, 0]).any(-1)
+            ink_t = (theirs != theirs[0, 0]).any(-1)
+            off = int((ink_m != ink_t).sum())
+            results.append((ext + "*", off,
+                            "" if off == 0 else "ink layout differs"))
             continue
         results.append((ext, diff, ""))
 

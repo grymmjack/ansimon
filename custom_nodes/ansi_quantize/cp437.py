@@ -83,6 +83,25 @@ UNICODE_TO_CP437 = {c: i for i, c in enumerate(CP437) if i not in (0, 0xFF)}
 # only ever allowed to emit characters from the active subset.
 # ---------------------------------------------------------------------------
 BLANK = 0x20
+
+# Codes 0x00-0x1F are real CP437 glyphs — 0x01 is a smiley, 0x0E a pair of
+# quavers, 0x1B a left arrow — but a `.ANS` file is a STREAM, and in a stream
+# those bytes are control codes. Writing glyph 0x1B emits an ESC and every byte
+# after it becomes part of a bogus escape sequence; 0x1A ends the art and starts
+# the SAUCE record; 0x0A, 0x0D, 0x08 and 0x09 move the cursor.
+#
+# So the quantizer is never allowed to choose them. Not because rendering them
+# is hard, but because no ANSI file can contain them — which is also why real
+# scene art never used them, and why `tools/extract-font.py` ships its glyph
+# chart as XBin instead. XBin stores raw char/attr pairs and could carry these
+# fine, but the cell grid feeds every output format from one source of truth, so
+# the restriction has to hold at the point the characters are CHOSEN, not the
+# point they are written.
+#
+# Found by tools/gauntlet.py: `--charset full` put 2581 ESC bytes into an 80x40
+# .ans and corrupted 52% of it.
+STREAM_UNSAFE = frozenset(range(0x00, 0x20))
+
 FULL_BLOCK = 0xDB
 UPPER_HALF = 0xDF
 LOWER_HALF = 0xDC
@@ -104,8 +123,10 @@ CHARSETS = {
     "structure": tuple(sorted(set(GEOMETRIC + BOX_DRAWING))),
     # Printable 7-bit ASCII only — for true ASCII art, no colour blocks.
     "ascii": tuple(range(0x21, 0x7F)) + (BLANK,),
-    # The whole page. Maximum fidelity, highest noise risk.
-    "full": tuple(i for i in range(1, 256) if i != 0x7F),
+    # The whole page, minus what a .ANS stream cannot carry. Maximum fidelity,
+    # highest noise risk.
+    "full": tuple(i for i in range(1, 256)
+                  if i != 0x7F and i not in STREAM_UNSAFE),
 }
 
 
@@ -398,7 +419,12 @@ def coverage():
 
 
 def charset_indices(name):
-    """Resolve a charset name (or a comma-list of hex codes) to a tuple of ints."""
+    """Resolve a charset name (or a comma-list of hex codes) to a tuple of ints.
+
+    An explicit code list is validated rather than filtered: asking for 0x1B by
+    number is asking for something no `.ANS` can hold, so say so instead of
+    quietly dropping it. The named sets are already free of them.
+    """
     if name in CHARSETS:
         return CHARSETS[name]
     out = []
@@ -410,7 +436,14 @@ def charset_indices(name):
                              f"{', '.join(CHARSETS)}")
     if not out:
         raise ValueError(f"unknown charset {name!r}")
-    return tuple(sorted({c & 0xFF for c in out}))
+    codes = tuple(sorted({c & 0xFF for c in out}))
+    bad = [c for c in codes if c in STREAM_UNSAFE]
+    if bad:
+        raise ValueError(
+            f"charset contains control codes {', '.join(f'0x{c:02X}' for c in bad)} "
+            f"— those are CP437 glyphs but control bytes in a .ANS stream "
+            f"(0x1B is ESC, 0x1A ends the art), so no ANSI file can hold them")
+    return codes
 
 
 def font_source_description():
