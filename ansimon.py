@@ -974,6 +974,25 @@ def main():
                   f"{', '.join(note)} — those work around the 16-colour "
                   f"palette, and there isn't one now{C['rst']}")
 
+    # A .ans stores colour INDICES, so a custom palette simply isn't in the
+    # file — a viewer supplies its own RGB for index 9 and the art comes out in
+    # the standard 16 no matter what ansimon's PNG shows. XBin embeds the
+    # palette and truecolor writes literal RGB; those are the two ways a
+    # non-standard palette actually survives. Say so instead of shipping a file
+    # that only looks right here.
+    if a.depth in ("16", "256") and a.format in ("ans", "none"):
+        try:
+            sys.path.insert(0, os.path.join(_SCRIPT_DIR, "custom_nodes"))
+            from ansi_quantize.palette import ANSI16, parse_palette
+            custom = list(parse_palette(a.palette, a.custom_hex)) != list(ANSI16)
+        except Exception:
+            custom = a.palette not in ("ansi", "EGA")
+        if custom and a.format == "ans":
+            print(f"   {C['yel']}note{C['rst']} {C['dim']}--palette {a.palette} "
+                  f"won't survive in a .ans — the file stores colour indices, "
+                  f"not colours. Add --format both for a .xb (embeds the "
+                  f"palette) or use --truecolor --lock-palette.{C['rst']}")
+
     if a.lock_palette and a.depth != "rgb":
         # At 16 the palette is always the constraint; at 256 the indices mean
         # whatever the viewer's table says, so locking is not ours to do.

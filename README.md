@@ -178,6 +178,19 @@ height live in the header, so any canvas size is first-class. It also embeds:
 It is also smaller: on a real 80×40 piece, 20.8 KB `.ans` → 8.3 KB compressed
 `.xb` (RLE, ~78% of raw), and 4.2 KB without the embedded font.
 
+> **A custom `--palette` does not survive in a plain `.ans`.** The file stores
+> colour *indices*, and a viewer supplies its own RGB for index 9 — so
+> `--palette GAMEBOY --format ans` yields art that looks right only in ansimon's
+> own PNG. ansimon prints a note when you do this. The two ways a non-standard
+> palette actually travels are `--format both` / `xb` (XBin embeds all 16) and
+> `--truecolor --lock-palette` (literal RGB per cell).
+>
+> Note also that XBin's palette is **6-bit** per channel, so ansimon rounds the
+> palette to what the file can hold before rendering. Colours can therefore sit
+> up to 2/255 from the `.GPL` as written — invisible, and it keeps the PNG and
+> the `.xb` in exact agreement. The canonical `ansi` and `EGA` palettes are
+> unaffected; every channel in them is already DAC-exact.
+
 Both formats carry a full **SAUCE** record (title / author / group / date, with
 the correct DataType — 1/1 for ANSi, 6/0 for XBin):
 

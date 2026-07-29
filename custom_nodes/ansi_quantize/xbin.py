@@ -66,6 +66,32 @@ def pack_font(chars=None, cell_h=CELL_H):
     return np.packbits(bits, axis=-1).astype(np.uint8).tobytes()
 
 
+def dac6(v):
+    """8-bit channel -> the 6-bit VGA DAC value XBin stores."""
+    return min(63, int(round(float(v) / 255.0 * 63.0)))
+
+
+def dac_snap(pal):
+    """Round a palette to the colours XBin can actually represent.
+
+    XBin's palette block is 6-bit per channel, so an arbitrary RGB value does
+    not survive the trip: a reader expands it back as `(d<<2) | (d>>4)`, which
+    lands 1-2 away from where it started. The canonical ANSI and EGA palettes
+    are unaffected — every channel in them is already DAC-exact — which is
+    exactly why this went unnoticed until a gauntlet run used APPLE2-LORES and
+    83% of the .xb's pixels disagreed with the PNG.
+
+    Snapping up front means the PNG depicts the colours the file will really
+    hold, so invariant 1 (the PNG is a pixel-exact rendering of the art file)
+    survives a non-EGA palette. The cost is at most 2/255 per channel against
+    the palette as written on disk, which is invisible; the alternative is an
+    .xb whose colours quietly disagree with the preview — and since ansimon
+    writes .xb automatically at any non-80 width, that would happen to people
+    who never asked for XBin at all.
+    """
+    return [tuple(((dac6(v) << 2) | (dac6(v) >> 4)) for v in c) for c in pal]
+
+
 def pack_palette(pal):
     """16 RGB tuples (0-255) -> XBin palette block (0-63 per channel).
 
@@ -76,7 +102,7 @@ def pack_palette(pal):
     out = bytearray()
     for r, g, b in list(pal)[:16]:
         for v in (r, g, b):
-            out.append(min(63, int(round(float(v) / 255.0 * 63.0))))
+            out.append(dac6(v))
     while len(out) < 48:
         out.append(0)
     return bytes(out)

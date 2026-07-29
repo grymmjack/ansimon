@@ -42,11 +42,37 @@ symlinks. Editing files here takes effect immediately — but see "restart" belo
 
 ## Invariants — do not break these
 
-**1. The PNG must be a pixel-exact rendering of the emitted art file.**
-This is the project's whole claim. `cp437.glyph_bitmaps()` is the single source
-of truth used by *both* the quantizer (as coverage masks) and the renderer (as
-bitmaps), which is what makes it true by construction. If you add a code path
-that draws glyphs some other way, you have broken it.
+**1. The PNG must be a pixel-exact rendering of the emitted art file — wherever
+the file can carry the colours.** This is the project's whole claim.
+`cp437.glyph_bitmaps()` is the single source of truth used by *both* the
+quantizer (as coverage masks) and the renderer (as bitmaps), which is what makes
+the *geometry* true by construction. If you add a code path that draws glyphs
+some other way, you have broken it.
+
+The colour half is scoped, and the scope is a property of the formats:
+
+| file | carries colour as | PNG matches a viewer |
+|------|-------------------|----------------------|
+| `.xb` | embedded 16-colour palette, 6-bit | always |
+| `.ans` depth 16 / 256 | bare indices | **only with the standard palette** |
+| `.ans` depth rgb | literal RGB per cell | always |
+
+A `.ans` has no palette block, so `--palette GAMEBOY --format ans` produces a
+file that looks right *only in ansimon's own PNG*. That is the format's limit,
+not a defect — it is why XBin exists. The CLI now warns; do not "fix" it by
+making the PNG match the viewer instead, because then the PNG stops depicting
+the palette the user asked for. `tools/gauntlet.py` encodes exactly this rule in
+`ans_is_palette_faithful()`, and forces a `.xb` for the cases where the `.ans`
+cannot be judged.
+
+**1b. A palette that will be embedded must be DAC-snapped before rendering.**
+XBin's palette block is 6 bits per channel, so arbitrary RGB does not survive
+(`(d<<2)|(d>>4)` lands 1-2 away). Render from the requested palette and write
+the rounded one and you have two sources of truth: on APPLE2-LORES that put 83%
+of the `.xb`'s pixels at odds with the PNG. `xbin.dac_snap()` is applied at
+depth 16 in `AnsiQuantize.process`. It went unnoticed for the whole project
+because every channel of `ansi` and `EGA` is already DAC-exact — the default
+palette cannot expose this bug.
 
 Verify:
 ```python

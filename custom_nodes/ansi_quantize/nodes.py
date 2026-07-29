@@ -562,6 +562,13 @@ class AnsiQuantize:
                 custom_hex=""):
         pal = np.asarray(parse_palette(palette, custom_hex), np.float64)
         chars = charset_indices(charset)
+        if str(depth) == "16":
+            # XBin embeds this palette at 6 bits per channel, so snap it to what
+            # the file can hold before anything renders from it. Otherwise the
+            # PNG shows the requested RGB and the .xb shows the DAC-rounded RGB,
+            # and the two disagree on every non-EGA palette. Deep colour writes
+            # literal RGB into a .ans with no DAC involved, so it is left alone.
+            pal = np.asarray(xbin_fmt.dac_snap(pal), np.float64)
         cell_h, cell_w = int(cell_height), int(cell_width)
         pil = _tensor_to_pil(image)
 
