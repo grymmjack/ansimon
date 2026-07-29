@@ -40,7 +40,8 @@ from PIL import Image, ImageFilter
 
 from . import ansi as ansi_fmt
 from . import xbin as xbin_fmt
-from .cp437 import CELL_H, CELL_W, CHARSETS, charset_indices, glyph_bitmaps
+from .cp437 import (CELL_H, CELL_W, CHARSETS, charset_indices, font,
+                    glyph_bitmaps)
 from .palette import ALL_PALETTES, parse_palette
 
 _RESAMPLE = {"nearest": Image.NEAREST, "box (area average)": Image.BOX,
@@ -250,7 +251,7 @@ def parse_colors(spec):
 
 def match_cells(patches, chars, pal, ice=False, dither=False, cols=None,
                 strength=0.75, clamp=64.0, portable_bias=0.5, shade_blend=True,
-                shade_bias=0.10, allow=None):
+                shade_bias=0.10, allow=None, cell_h=CELL_H, cell_w=CELL_W):
     """Choose (char, fg, bg) for every cell.
 
     `patches` is (N, CELL_H*CELL_W, 3) float in 0-255, `chars` the allowed
@@ -270,7 +271,7 @@ def match_cells(patches, chars, pal, ice=False, dither=False, cols=None,
     viewer ever made). Both render identically here, so we nudge the matcher
     toward the one that survives contact with other people's software.
     """
-    masks = glyph_bitmaps()[list(chars)].reshape(len(chars), -1)      # (G,P)
+    masks = font(cell_h, cell_w)[list(chars)].reshape(len(chars), -1)    # (G,P)
     st = _CellStats(patches, masks)
     pal = np.asarray(pal, np.float64)
     n_bg = 16 if ice else 8
@@ -365,17 +366,17 @@ def match_cells(patches, chars, pal, ice=False, dither=False, cols=None,
 # ---------------------------------------------------------------------------
 # Rendering: paint the chosen cells back out through the same glyph bitmaps.
 # ---------------------------------------------------------------------------
-def render_cells(ch, fg, bg, pal):
-    """(rows,cols) cell arrays -> (rows*16, cols*8, 3) uint8 image."""
+def render_cells(ch, fg, bg, pal, cell_h=CELL_H, cell_w=CELL_W):
+    """(rows,cols) cell arrays -> (rows*cell_h, cols*cell_w, 3) uint8 image."""
     rows, cols = ch.shape
-    glyphs = glyph_bitmaps()                                 # (256,16,8) bool
+    glyphs = font(cell_h, cell_w)                            # (256,cell_h,cell_w)
     pal = np.asarray(pal, np.uint8)
     masks = glyphs[ch]                                       # (rows,cols,16,8)
     fg_col = pal[fg][:, :, None, None, :]                    # (rows,cols,1,1,3)
     bg_col = pal[bg][:, :, None, None, :]
     cell = np.where(masks[..., None], fg_col, bg_col)        # (rows,cols,16,8,3)
     return (cell.transpose(0, 2, 1, 3, 4)
-                .reshape(rows * CELL_H, cols * CELL_W, 3)
+                .reshape(rows * cell_h, cols * cell_w, 3)
                 .astype(np.uint8))
 
 
@@ -414,6 +415,8 @@ class AnsiQuantize:
                 "colors": ("STRING", {"default": ""}),
                 "shading": (["none", "light", "medium", "full"],
                             {"default": "light"}),
+                "cell_height": ([16, 8], {"default": 16}),
+                "cell_width": ([8, 9], {"default": 8}),
                 "smooth": (["mode", "median", "none"], {"default": "mode"}),
                 "pixel_grid": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 8}),
                 "snap_pixels": ("BOOLEAN", {"default": False}),
@@ -434,13 +437,14 @@ class AnsiQuantize:
 
     def process(self, image, cols, rows, charset, palette,
                 ice_colors=True, dither=False, dither_strength=0.75,
-                colors="", shading="light",
+                colors="", shading="light", cell_height=16, cell_width=8,
                 smooth="mode", pixel_grid=0,
                 snap_pixels=False, snap_colors=0, aspect="square", view_scale=1, scale=1,
                 resample="box (area average)", force_black_bg=False,
                 custom_hex=""):
         pal = np.asarray(parse_palette(palette, custom_hex), np.float64)
         chars = charset_indices(charset)
+        cell_h, cell_w = int(cell_height), int(cell_width)
         pil = _tensor_to_pil(image)
 
         # --- 1. grid alignment ------------------------------------------------
@@ -457,14 +461,14 @@ class AnsiQuantize:
             pil = flatten_shrink(pil, max(cols, rows) * 4, Image.BOX, smooth)
 
         # --- 2. sample to exact cell resolution -------------------------------
-        target = (cols * CELL_W, rows * CELL_H)
+        target = (cols * cell_w, rows * cell_h)
         arr = np.asarray(pil.resize(target, _RESAMPLE[resample]).convert("RGB"),
                          np.float64)
 
         # --- 3. per-cell character + colour choice ----------------------------
-        patches = (arr.reshape(rows, CELL_H, cols, CELL_W, 3)
+        patches = (arr.reshape(rows, cell_h, cols, cell_w, 3)
                       .transpose(0, 2, 1, 3, 4)
-                      .reshape(rows * cols, CELL_H * CELL_W, 3))
+                      .reshape(rows * cols, cell_h * cell_w, 3))
         # How eagerly a shade blend may displace a solid pick. Tuned against a
         # real corpus, which sits near 10% shade characters: bias 1.0 gave 75%
         # (the whole canvas dithered), 0.35 gave 54%.
@@ -473,7 +477,8 @@ class AnsiQuantize:
                                          dither=dither, cols=cols,
                                          strength=dither_strength,
                                          shade_blend=bias > 0, shade_bias=bias,
-                                         allow=parse_colors(colors))
+                                         allow=parse_colors(colors),
+                                         cell_h=cell_h, cell_w=cell_w)
 
         ch = ch.reshape(rows, cols).astype(np.uint8)
         fg = fg.reshape(rows, cols).astype(np.uint8)
@@ -482,7 +487,7 @@ class AnsiQuantize:
 
         # Tidy the degenerate cases so the .ANS is clean: a full block has no
         # visible background, a blank has no visible foreground.
-        bg[cnt >= CELL_H * CELL_W] = 0
+        bg[cnt >= cell_h * cell_w] = 0
         fg[cnt <= 0] = 7
         if force_black_bg:
             # Re-solve with background pinned to black — the look of a lot of
@@ -490,7 +495,8 @@ class AnsiQuantize:
             bg[:] = 0
 
         # --- 4. render the cells back out -------------------------------------
-        out = render_cells(ch, fg, bg, pal.astype(np.uint8))
+        out = render_cells(ch, fg, bg, pal.astype(np.uint8),
+                           cell_h=cell_h, cell_w=cell_w)
         img = Image.fromarray(out, "RGB")
         if scale > 1:
             # Integer nearest-neighbour only. The PNG stays a faithful picture
@@ -503,7 +509,8 @@ class AnsiQuantize:
             preview = preview.resize((preview.width * view_scale,
                                       preview.height * view_scale), Image.NEAREST)
 
-        cells = ansi_fmt.pack_cells(ch, fg, bg, pal.astype(np.uint8), ice_colors)
+        cells = ansi_fmt.pack_cells(ch, fg, bg, pal.astype(np.uint8), ice_colors,
+                                    cell_h=cell_h, cell_w=cell_w)
         return (_pil_to_tensor(img), _pil_to_tensor(preview),
                 base64.b64encode(cells).decode("ascii"))
 
@@ -551,7 +558,8 @@ class SaveAnsi:
 
     def save(self, cells_b64, filename_prefix, format="ans", title="", author="",
              group="", date="", sauce=True, xb_compress=True, xb_embed_font=True):
-        ch, fg, bg, pal, ice = ansi_fmt.unpack_cells(base64.b64decode(cells_b64))
+        ch, fg, bg, pal, ice, cell_h, cell_w = ansi_fmt.unpack_cells(
+            base64.b64decode(cells_b64))
         rows, cols = ch.shape
 
         blobs = {}
@@ -559,18 +567,20 @@ class SaveAnsi:
             body = ansi_fmt.to_ans(ch, fg, bg, ice=ice)
             if sauce:
                 body += b"\x1a" + ansi_fmt.sauce_record(
-                    len(body), cols, rows, title, author, group, date, ice)
+                    len(body), cols, rows, title, author, group, date, ice,
+                    cell_h=cell_h, cell_w=cell_w)
             blobs["ans"] = body
         if format in ("xb", "both"):
             body = xbin_fmt.to_xbin(ch, fg, bg, palette=pal, ice=ice,
-                                    compress=xb_compress, embed_font=xb_embed_font)
+                                    compress=xb_compress, embed_font=xb_embed_font,
+                                    cell_h=cell_h)
             if sauce:
                 # SAUCE for XBin: DataType 6 (XBin), FileType 0. Width/height
                 # are already authoritative in the XBin header; SAUCE just adds
                 # the title/author/group metadata.
                 body += b"\x1a" + ansi_fmt.sauce_record(
                     len(body), cols, rows, title, author, group, date, ice,
-                    datatype=6, filetype=0)
+                    datatype=6, filetype=0, cell_h=cell_h, cell_w=cell_w)
             blobs["xb"] = body
 
         try:

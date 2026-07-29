@@ -153,6 +153,9 @@ def print_help():
 {opt('--ice / --no-ice', 'iCE colours: 16 backgrounds, no blink', 'on')}
 {opt('--colors LIST', "restrict palette, e.g. '3,8,15,11'")}
 {opt('--shading LEVEL', 'none | light | medium | full', 'light')}
+{opt('--vga50', '8x8 cell instead of 8x16 (twice the rows)')}
+{opt('--font-9px', '9-dot VGA cell (box rules join)')}
+{opt('--aspect classic', '1.2x vertical stretch, the 4:3 CRT look')}
 {opt('--black-bg', 'pin every background to black (BBS look)')}
 {opt('--negative TEXT', 'override the default negative prompt')}
 
@@ -359,7 +362,7 @@ def parse_size(spec):
                      f"{', '.join(PRESETS)}")
 
 
-def gen_size(cols, rows, res):
+def gen_size(cols, rows, res, cell_h=16, cell_w=8):
     """Pick an SDXL latent size whose aspect matches the character canvas.
 
     A cell is 8x16, so an 80x40 canvas is square while an 80x25 one is 1.6:1
@@ -367,7 +370,7 @@ def gen_size(cols, rows, res):
     everything, so the latent gets the canvas's aspect, rounded to the /64 grid
     SDXL wants.
     """
-    aspect = (cols * 8) / (rows * 16)
+    aspect = (cols * cell_w) / (rows * cell_h)
     area = res * res
     w = (area * aspect) ** 0.5
     h = w / aspect
@@ -434,6 +437,8 @@ def build_graph(a, seed, subject=None, server=None):
                           "ice_colors": a.ice, "dither": a.dither,
                           "dither_strength": a.dither_strength,
                           "colors": a.colors, "shading": a.shading,
+                          "cell_height": 8 if a.vga50 else 16,
+                          "cell_width": 9 if a.font_9px else 8,
                           "smooth": a.smooth, "pixel_grid": a.pixel_grid,
                           "snap_pixels": a.snap_pixels, "snap_colors": a.snap_colors,
                           "aspect": ("classic (4:3)" if a.aspect.startswith("c")
@@ -733,6 +738,14 @@ def main():
                         "'3,8,15,11' for cyan/grey/white/bright-cyan. Black (0) "
                         "is always kept as the canvas. Great for locking a whole "
                         "tileset to one scheme.")
+    p.add_argument("--font-9px", dest="font_9px", action="store_true",
+                   help="9-dot VGA cell — the 9th column repeats column 8 for "
+                        "codes 0xC0-0xDF so box rules join, exactly as VGA text "
+                        "mode did. This is what ansilove and 16colo render.")
+    p.add_argument("--vga50", action="store_true",
+                   help="8x8 cell (VGA50 / EGA43) instead of 8x16 — twice the "
+                        "rows in the same pixels. The SAUCE font name is what "
+                        "selects this for viewers, not the XBin fontsize byte.")
     p.add_argument("--shading", default="light",
                    choices=["none", "light", "medium", "full"],
                    help="how eagerly the shade characters may blend two colours "
@@ -842,7 +855,8 @@ def main():
         sys.exit(str(e))
     a.cols = a.cols or cols
     a.rows = a.rows or rows
-    a.gen_w, a.gen_h = gen_size(a.cols, a.rows, a.res)
+    a.gen_w, a.gen_h = gen_size(a.cols, a.rows, a.res,
+                                8 if a.vga50 else 16, 9 if a.font_9px else 8)
 
     # --format is the real control; --xb / --no-ans are conveniences on top.
     if a.want_xb and a.format == "ans":
@@ -915,7 +929,9 @@ def main():
 
     label = a.batch or a.prompt
     print(f"\n{C['mag']}ansimon{C['rst']} {C['b']}{label}{C['rst']}")
-    print(f"   {C['dim']}canvas {a.cols}x{a.rows} chars -> {a.cols*8}x{a.rows*16} px"
+    _chh = 8 if a.vga50 else 16
+    _chw = 9 if a.font_9px else 8
+    print(f"   {C['dim']}canvas {a.cols}x{a.rows} chars -> {a.cols*_chw}x{a.rows*_chh} px"
           f"  ·  latent {a.gen_w}x{a.gen_h}  ·  charset {a.charset}"
           f"  ·  palette {a.palette}{C['rst']}")
 

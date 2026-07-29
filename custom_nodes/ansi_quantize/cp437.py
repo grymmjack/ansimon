@@ -357,6 +357,29 @@ def glyph_bitmaps(height=CELL_H):
     return table
 
 
+def glyph_bitmaps_9(height=CELL_H):
+    """The font widened to a 9-dot cell, as VGA text mode actually did it.
+
+    VGA's character clock was 9 pixels but the ROM font only 8 wide. The 9th
+    column was blank — EXCEPT for codes 0xC0-0xDF, where the hardware repeated
+    column 8 so box-drawing rules connect across cell boundaries instead of
+    showing a 1px gap every character. Applying the repeat to every glyph would
+    smear letters; skipping it entirely breaks every box.
+    """
+    g8 = glyph_bitmaps(height)
+    g9 = np.zeros((256, height, 9), bool)
+    g9[:, :, :8] = g8
+    linedraw = np.zeros(256, bool)
+    linedraw[0xC0:0xE0] = True
+    g9[linedraw, :, 8] = g8[linedraw, :, 7]
+    return g9
+
+
+def font(height=CELL_H, width=CELL_W):
+    """Glyph table at the requested cell size."""
+    return glyph_bitmaps_9(height) if width == 9 else glyph_bitmaps(height)
+
+
 def cell_height():
     """Height of the font actually available, in pixels."""
     return CELL_H if _embedded_font(CELL_H) is not None else CELL_H

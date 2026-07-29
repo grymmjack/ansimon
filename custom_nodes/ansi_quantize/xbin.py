@@ -56,13 +56,13 @@ RUN_BOTH = 0b11        # one char + one attr, repeated `count` times
 MAX_RUN = 64           # the count field is 6 bits, stored as count-1
 
 
-def pack_font(chars=None):
+def pack_font(chars=None, cell_h=CELL_H):
     """Our 8x16 glyph table -> XBin font block (256 glyphs x 16 bytes, MSB first).
 
     `chars` is ignored; XBin fonts are always the full 256 (or 512) glyph page,
     so we ship the whole table even when the art only used nine characters.
     """
-    bits = glyph_bitmaps()                       # (256, 16, 8) bool
+    bits = glyph_bitmaps(cell_h)                 # (256, cell_h, 8) bool
     return np.packbits(bits, axis=-1).astype(np.uint8).tobytes()
 
 
@@ -153,7 +153,7 @@ def compress_rows(ch, attr):
 
 
 def to_xbin(ch, fg, bg, palette=None, ice=True, compress=True,
-            embed_font=True, embed_palette=True):
+            embed_font=True, embed_palette=True, cell_h=CELL_H):
     """Serialise a cell grid to XBin bytes."""
     ch = np.asarray(ch, np.uint8)
     rows, cols = ch.shape
@@ -172,12 +172,12 @@ def to_xbin(ch, fg, bg, palette=None, ice=True, compress=True,
     out = bytearray(MAGIC)
     out += int(cols).to_bytes(2, "little")
     out += int(rows).to_bytes(2, "little")
-    out.append(CELL_H)
+    out.append(cell_h)
     out.append(flags)
     if flags & FLAG_PALETTE:
         out += pack_palette(palette)
     if flags & FLAG_FONT:
-        out += pack_font()
+        out += pack_font(cell_h=cell_h)
     out += compress_rows(ch, attr) if compress else \
         bytes(v for pair in zip(ch.ravel(), attr.ravel()) for v in (int(pair[0]), int(pair[1])))
     return bytes(out)

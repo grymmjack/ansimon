@@ -56,10 +56,10 @@ FILETYPE_ANSI = 1
 # emit pre-serialised bytes, it emits the CELLS and lets the saver decide. One
 # source of truth, and adding a new output format never touches the quantizer.
 # ---------------------------------------------------------------------------
-CELLS_MAGIC = b"ACEL\x01"
+CELLS_MAGIC = b"ACEL\x02"
 
 
-def pack_cells(ch, fg, bg, palette, ice):
+def pack_cells(ch, fg, bg, palette, ice, cell_h=16, cell_w=8):
     """Cell grid + palette -> compact bytes for the ComfyUI STRING channel."""
     ch = np.asarray(ch, np.uint8)
     rows, cols = ch.shape
@@ -67,6 +67,8 @@ def pack_cells(ch, fg, bg, palette, ice):
     out += int(cols).to_bytes(2, "little")
     out += int(rows).to_bytes(2, "little")
     out.append(1 if ice else 0)
+    out.append(int(cell_h) & 0xFF)
+    out.append(int(cell_w) & 0xFF)
     for r, g, b in list(palette)[:16]:
         out += bytes((int(r) & 0xFF, int(g) & 0xFF, int(b) & 0xFF))
     out += ch.tobytes()
@@ -82,13 +84,15 @@ def unpack_cells(data):
     cols = int.from_bytes(data[5:7], "little")
     rows = int.from_bytes(data[7:9], "little")
     ice = bool(data[9])
-    pal = [tuple(data[10 + i * 3:13 + i * 3]) for i in range(16)]
+    cell_h, cell_w = int(data[10]), int(data[11])
+    base = 12
+    pal = [tuple(data[base + i * 3:base + 3 + i * 3]) for i in range(16)]
     n = rows * cols
-    base = 10 + 48
-    a = np.frombuffer(data, np.uint8, count=n * 3, offset=base)
+    off = base + 48
+    a = np.frombuffer(data, np.uint8, count=n * 3, offset=off)
     return (a[:n].reshape(rows, cols).copy(),
             a[n:2 * n].reshape(rows, cols).copy(),
-            a[2 * n:].reshape(rows, cols).copy(), pal, ice)
+            a[2 * n:].reshape(rows, cols).copy(), pal, ice, cell_h, cell_w)
 
 
 def _sgr(fg, bg, ice):
@@ -190,9 +194,22 @@ def to_ans(ch, fg, bg, ice=False, width=None, trim_trailing=True):
     return bytes(out)
 
 
+# SAUCE names the font in TInfoS, and that name is what selects the CELL SIZE.
+# Viewers read the SECOND word: "VGA50" and "EGA43" mean an 8x8 cell, while
+# "IBM VGA" — and even "IBM VGA 850", where 850 is a codepage — mean 8x16.
+# The XBin fontsize byte does not drive this for .ANS at all.
+FONT_8x16 = "IBM VGA"
+FONT_8x8 = "IBM VGA50"
+
+
+def font_name_for(cell_h):
+    return FONT_8x8 if cell_h == 8 else FONT_8x16
+
+
 def sauce_record(data_len, cols, rows, title="", author="", group="",
                  date="", ice=False, aspect_square=True,
-                 datatype=DATATYPE_CHARACTER, filetype=FILETYPE_ANSI):
+                 datatype=DATATYPE_CHARACTER, filetype=FILETYPE_ANSI,
+                 font=None, cell_h=16, cell_w=8):
     """Build the 128-byte SAUCE record that describes an ANSI file.
 
     `date` is YYYYMMDD; callers pass one explicitly rather than reading the
@@ -205,7 +222,7 @@ def sauce_record(data_len, cols, rows, title="", author="", group="",
     tflags = 0
     if ice:
         tflags |= 0x01
-    tflags |= (0x01 << 1)                        # 8-pixel (no 9th-column) font
+    tflags |= ((0x02 if cell_w == 9 else 0x01) << 1)   # 01 = 8-dot, 10 = 9-dot
     tflags |= (0x02 if aspect_square else 0x01) << 3
 
     rec = bytearray()
@@ -222,13 +239,13 @@ def sauce_record(data_len, cols, rows, title="", author="", group="",
     rec += (0).to_bytes(2, "little")             # TInfo4
     rec += bytes([0])                            # comment lines
     rec += bytes([tflags])
-    rec += fixed("IBM VGA", 22)                  # TInfoS = font name
+    rec += fixed(font or font_name_for(cell_h), 22)   # TInfoS = font name
     assert len(rec) == 128, len(rec)
     return bytes(rec)
 
 
 def write_ans(path, ch, fg, bg, ice=False, sauce=True, title="", author="",
-              group="", date="", aspect_square=True):
+              group="", date="", aspect_square=True, cell_h=16):
     """Write a complete `.ANS` file (art + EOF marker + SAUCE)."""
     body = to_ans(ch, fg, bg, ice=ice)
     with open(path, "wb") as f:
@@ -237,7 +254,7 @@ def write_ans(path, ch, fg, bg, ice=False, sauce=True, title="", author="",
             rows, cols = np.asarray(ch).shape
             f.write(b"\x1a")
             f.write(sauce_record(len(body), cols, rows, title, author, group,
-                                 date, ice, aspect_square))
+                                 date, ice, aspect_square, cell_h=cell_h))
     return len(body)
 
 
