@@ -721,10 +721,29 @@ def submit(graph, server=None, raising=False):
     except urllib.error.HTTPError as e:
         body = e.read().decode()[:1200]
         msg = "ComfyUI rejected the request:\n" + body
+        # Two very different failures both mention our node names, and blaming
+        # the wrong one has cost real time three times now: a node that is
+        # ABSENT reports an unknown class type, while a node that is PRESENT but
+        # rejected an input reports that input's name. Telling someone to
+        # reinstall a node they already have sends them the wrong way entirely —
+        # the real causes were an enum value the remote copy didn't know
+        # (`--shading minimal` before the farm was re-synced) and a value under
+        # the node's declared minimum (a 6x3 canvas against min 8).
         if "AnsiQuantize" in body or "SaveAnsi" in body:
-            msg += ("\n\nThat box doesn't have the ansi_quantize node. Install it there:\n"
-                    "    git clone <your-remote> ~/git/ansimon && ~/git/ansimon/install.sh\n"
-                    "then restart its ComfyUI.")
+            absent = ("does not exist" in body or "not found" in body
+                      or "unknown" in body.lower() or "invalid node type" in body.lower())
+            if absent:
+                msg += ("\n\nThat box doesn't have the ansi_quantize node. "
+                        "Install it there:\n"
+                        "    git clone <your-remote> ~/git/ansimon && "
+                        "~/git/ansimon/install.sh\n"
+                        "then restart its ComfyUI.")
+            else:
+                msg += ("\n\nThat box HAS the node but refused an input — see the "
+                        "field named above. Usual causes: the remote copy is older "
+                        "than this one (re-sync custom_nodes/ansi_quantize and "
+                        "restart its ComfyUI), or a value is outside the range the "
+                        "node declares.")
         if raising:
             raise SubmitError(msg)
         sys.exit(msg)

@@ -523,8 +523,12 @@ class AnsiQuantize:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "cols": ("INT", {"default": 80, "min": 8, "max": 320, "step": 1}),
-                "rows": ("INT", {"default": 50, "min": 4, "max": 200, "step": 1}),
+                # Minimums are 1, not 8x4. Game art includes genuinely tiny
+                # pieces — DUNGEON!'s board markers are 6x3 cells — and a floor
+                # of 8 made ComfyUI reject the graph, which ansimon then
+                # misreported as "that box doesn't have the ansi_quantize node".
+                "cols": ("INT", {"default": 80, "min": 1, "max": 320, "step": 1}),
+                "rows": ("INT", {"default": 50, "min": 1, "max": 200, "step": 1}),
                 "charset": (list(_CHARSET_NAMES), {"default": "blocks"}),
                 "palette": (list(ALL_PALETTES.keys()) + ["Custom"],
                             {"default": "ansi"}),
