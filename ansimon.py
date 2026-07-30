@@ -984,9 +984,14 @@ def main():
                         "rows in the same pixels. The SAUCE font name is what "
                         "selects this for viewers, not the XBin fontsize byte.")
     p.add_argument("--shading", default="light",
-                   choices=["none", "light", "medium", "full"],
-                   help="how eagerly the shade characters may blend two colours "
-                        "into an intermediate tone. default light")
+                   choices=["none", "minimal", "light", "medium", "full"],
+                   help="how eagerly the shade characters ░▒▓ may blend two "
+                        "colours into an intermediate tone. Measured share of "
+                        "cells that end up a shade glyph: minimal 10%%, light "
+                        "20%%, medium 36%%, full ~half. Hand-drawn scene art "
+                        "sits near 10%%, so 'minimal' is the faithful one. "
+                        "Needs a charset containing ░▒▓ (blocks, geometric, "
+                        "full) — it does nothing under halfblock. default light")
     p.add_argument("--black-bg", dest="black_bg", action="store_true",
                    help="pin every background to black")
     p.add_argument("--steps", type=int, default=None, help="sampling steps. default 30")
@@ -1193,6 +1198,26 @@ def main():
                   f"won't survive in a .ans — the file stores colour indices, "
                   f"not colours. Add --format both for a .xb (embeds the "
                   f"palette) or use --truecolor --lock-palette.{C['rst']}")
+
+    # --shading can only do anything if the charset actually contains the shade
+    # glyphs it works with. Under `halfblock` (space, block, half block) there
+    # are none, so every level from minimal to full is identical to none — the
+    # default `--shading light` has silently meant "no shading" for the whole
+    # life of the default charset. Resolve it to `none` here so the setting the
+    # graph carries is the setting that will happen, and say so once.
+    if a.shading != "none":
+        try:
+            sys.path.insert(0, os.path.join(_SCRIPT_DIR, "custom_nodes"))
+            from ansi_quantize.cp437 import charset_indices
+            has_shades = any(c in (0xB0, 0xB1, 0xB2)
+                             for c in charset_indices(a.charset))
+        except Exception:
+            has_shades = True          # can't tell; leave the setting alone
+        if not has_shades:
+            print(f"   {C['dim']}--shading {a.shading} does nothing with "
+                  f"--charset {a.charset}: it has no ░▒▓ glyphs to shade with. "
+                  f"Use --charset blocks for shading{C['rst']}")
+            a.shading = "none"
 
     if a.lock_palette and a.depth != "rgb":
         # At 16 the palette is always the constraint; at 256 the indices mean

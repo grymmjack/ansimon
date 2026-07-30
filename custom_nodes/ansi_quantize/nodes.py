@@ -40,8 +40,11 @@ from PIL import Image, ImageFilter
 
 from . import ansi as ansi_fmt
 from . import xbin as xbin_fmt
-from .cp437 import (CELL_H, CELL_W, CHARSETS, charset_indices, font,
+from .cp437 import (CELL_H, CELL_W, CHARSETS, SHADES, charset_indices, font,
                     glyph_bitmaps)
+
+# The shade ramp, as a set, for "can this charset shade at all" tests.
+SHADE_GLYPHS = frozenset(SHADES)
 from .palette import (ALL_PALETTES, parse_palette, parse_palette_full,
                       xterm256_palette)
 
@@ -303,7 +306,11 @@ def match_cells(patches, chars, pal, ice=False, dither=False, cols=None,
         out_cnt = st.cnt[best]
         out_err = err[rows, best]
 
-        if shade_blend and any(c in (0xB0, 0xB1, 0xB2) for c in chars):
+        # Enumerating the blends costs three 16x16 palette sweeps plus a
+        # nearest-colour search over every cell, so don't pay any of it when the
+        # active charset has nothing to draw a shade WITH — under `halfblock`
+        # the whole block below is unsatisfiable by construction.
+        if shade_blend and SHADE_GLYPHS.intersection(chars.tolist()):
             # Offer every shade blend as an alternative for each cell and take
             # it when it reproduces the cell's average colour better. Scored on
             # the CELL MEAN, because at 8x16 px the eye integrates the cell —
@@ -530,7 +537,7 @@ class AnsiQuantize:
                 "colors": ("STRING", {"default": ""}),
                 "depth": (["16", "256", "rgb"], {"default": "16"}),
                 "lock_palette": ("BOOLEAN", {"default": False}),
-                "shading": (["none", "light", "medium", "full"],
+                "shading": (["none", "minimal", "light", "medium", "full"],
                             {"default": "light"}),
                 "cell_height": ([16, 8], {"default": 16}),
                 "cell_width": ([8, 9], {"default": 8}),
@@ -597,7 +604,14 @@ class AnsiQuantize:
         # How eagerly a shade blend may displace a solid pick. Tuned against a
         # real corpus, which sits near 10% shade characters: bias 1.0 gave 75%
         # (the whole canvas dithered), 0.35 gave 54%.
-        bias = {"none": 0.0, "light": 0.10, "medium": 0.35, "full": 1.0}[shading]
+        # Measured on an 80x40 knight, charset `blocks`, as the share of cells
+        # drawn with a shade glyph — a real scene corpus sits near 10%:
+        #   0.00 -> 0%   0.03 -> 7.3%   0.05 -> 9.9%   0.10 -> 19.6%
+        #   0.35 -> 36.2%                                1.00 -> whole canvas
+        # so `minimal` is the level that actually matches hand-drawn ANSI, and
+        # `full` is texture rather than shading.
+        bias = {"none": 0.0, "minimal": 0.05, "light": 0.10,
+                "medium": 0.35, "full": 1.0}[shading]
         depth = str(depth)
 
         if depth == "16":
