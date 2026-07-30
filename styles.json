@@ -1,24 +1,87 @@
 {
   "_comment": "Style guides appended to your prompt with --style NAME[,NAME2]. Each adds 'prompt' to the positive and 'negative' to the negative prompt. SDXL honors (term:weight) emphasis. Written for ANSI: the recurring theme is FLAT regions and HARD edges, because that is what survives 80 columns and 16 colors. Add your own entries here.",
-
-  "blocktronics": {"prompt": "modern blockart, (heavy block shading:1.3), bold geometric forms, dense detail, dramatic lighting, high contrast", "negative": "soft, pastel, low contrast, sparse"},
-  "oldskool":     {"prompt": "early 1990s BBS ANSI art, (chunky blocks:1.2), simple bold shapes, limited shading, naive charm", "negative": "photorealistic, detailed, modern, smooth"},
-  "bbs":          {"prompt": "BBS login screen, centered emblem, decorative border, banner layout, symmetrical composition", "negative": "asymmetric, cluttered, photographic"},
-  "fileid":       {"prompt": "small compact logo, tight composition, thick letterforms, minimal detail", "negative": "sprawling, intricate, fine detail"},
-  "logo":         {"prompt": "(bold display lettering:1.4), thick blocky letterforms, strong outline, graphic logotype, poster layout", "negative": "thin strokes, script, handwriting, serif, fine typography"},
-
-  "highcontrast": {"prompt": "(extreme contrast:1.4), pure black shadows, blown highlights, hard-edged shapes, poster reduction", "negative": "gradient, soft shading, midtones, haze, fog"},
-  "flat":         {"prompt": "(flat color regions:1.3), cel shaded, hard color boundaries, no gradients, vector poster", "negative": "gradient, airbrush, soft shading, blur, glow"},
-  "silhouette":   {"prompt": "strong readable silhouette, single subject, clean shape against empty background", "negative": "busy background, clutter, crowd, texture"},
-  "duotone":      {"prompt": "two-color composition, stark limited palette, heavy negative space", "negative": "rainbow, many colors, colorful"},
-
-  "cyberpunk":    {"prompt": "cyberpunk, neon signage, dark city, magenta and cyan glow, hard rim light", "negative": "daylight, pastoral, muted"},
-  "fantasy":      {"prompt": "dark fantasy, heraldic, ornate, dramatic, gothic", "negative": "modern, sci-fi, cheerful"},
-  "horror":       {"prompt": "horror, creepy, grotesque, menacing, deep shadow", "negative": "cute, friendly, cheerful, bright"},
-  "demoscene":    {"prompt": "demoscene aesthetic, chrome lettering, starfield, geometric abstraction, retro-futuristic", "negative": "organic, naturalistic, photographic"},
-  "skull":        {"prompt": "skull motif, bone, gothic emblem, symmetrical, menacing", "negative": "cute, soft"},
-
-  "portrait":     {"prompt": "head and shoulders bust, front view, strong directional light, simple background", "negative": "full body, busy background, crowd"},
-  "landscape":    {"prompt": "wide scene, bold horizon, layered silhouettes, dramatic sky", "negative": "close-up, portrait, macro"},
-  "emblem":       {"prompt": "centered emblem, badge, crest, radial symmetry, decorative frame", "negative": "off-center, asymmetric, candid"}
+  "blocktronics": {
+    "prompt": "modern blockart, (heavy block shading:1.3), bold geometric forms, dense detail, dramatic lighting, high contrast",
+    "negative": "soft, pastel, low contrast, sparse"
+  },
+  "oldskool": {
+    "prompt": "early 1990s BBS ANSI art, (chunky blocks:1.2), simple bold shapes, limited shading, naive charm",
+    "negative": "photorealistic, detailed, modern, smooth"
+  },
+  "bbs": {
+    "prompt": "BBS login screen, centered emblem, decorative border, banner layout, symmetrical composition",
+    "negative": "asymmetric, cluttered, photographic"
+  },
+  "fileid": {
+    "prompt": "small compact logo, tight composition, thick letterforms, minimal detail",
+    "negative": "sprawling, intricate, fine detail"
+  },
+  "logo": {
+    "prompt": "(bold display lettering:1.4), thick blocky letterforms, strong outline, graphic logotype, poster layout",
+    "negative": "thin strokes, script, handwriting, serif, fine typography"
+  },
+  "highcontrast": {
+    "prompt": "(extreme contrast:1.4), pure black shadows, blown highlights, hard-edged shapes, poster reduction",
+    "negative": "gradient, soft shading, midtones, haze, fog"
+  },
+  "flat": {
+    "prompt": "(flat color regions:1.3), cel shaded, hard color boundaries, no gradients, vector poster",
+    "negative": "gradient, airbrush, soft shading, blur, glow"
+  },
+  "silhouette": {
+    "prompt": "strong readable silhouette, single subject, clean shape against empty background",
+    "negative": "busy background, clutter, crowd, texture"
+  },
+  "duotone": {
+    "prompt": "two-color composition, stark limited palette, heavy negative space",
+    "negative": "rainbow, many colors, colorful"
+  },
+  "cyberpunk": {
+    "prompt": "cyberpunk, neon signage, dark city, magenta and cyan glow, hard rim light",
+    "negative": "daylight, pastoral, muted"
+  },
+  "fantasy": {
+    "prompt": "dark fantasy, heraldic, ornate, dramatic, gothic",
+    "negative": "modern, sci-fi, cheerful"
+  },
+  "horror": {
+    "prompt": "horror, creepy, grotesque, menacing, deep shadow",
+    "negative": "cute, friendly, cheerful, bright"
+  },
+  "demoscene": {
+    "prompt": "demoscene aesthetic, chrome lettering, starfield, geometric abstraction, retro-futuristic",
+    "negative": "organic, naturalistic, photographic"
+  },
+  "skull": {
+    "prompt": "skull motif, bone, gothic emblem, symmetrical, menacing",
+    "negative": "cute, soft"
+  },
+  "portrait": {
+    "prompt": "head and shoulders bust, front view, strong directional light, simple background",
+    "negative": "full body, busy background, crowd"
+  },
+  "landscape": {
+    "prompt": "wide scene, bold horizon, layered silhouettes, dramatic sky",
+    "negative": "close-up, portrait, macro"
+  },
+  "emblem": {
+    "prompt": "centered emblem, badge, crest, radial symmetry, decorative frame",
+    "negative": "off-center, asymmetric, candid"
+  },
+  "dark": {
+    "prompt": "dark and gritty, eerie, muted desaturated colours, heavy shadow, ominous, few light sources",
+    "negative": "bright, cheerful, pastel, flat even lighting, daylight"
+  },
+  "darkest": {
+    "prompt": "Darkest Dungeon style gothic horror, grim and desaturated, heavy black ink shadow, strong rim light on one edge, bold silhouette, ornate menace",
+    "negative": "bright, cheerful, colourful, flat even lighting, soft gradient, pastel"
+  },
+  "dosrpg": {
+    "prompt": "retro MS-DOS CRPG portrait, head and shoulders bust, front view, bold flat colour masses, hard tonal steps, heavy outline, DOS VGA palette",
+    "negative": "modern, anime, cel shaded, smooth gradient, 3d render, photograph, clean vector, fine detail"
+  },
+  "item": {
+    "prompt": "a single game item icon, one isolated object, centred, bold readable silhouette, plain dark background",
+    "negative": "character, person, creature, hands, arms, body, face, figure, holding, scene, background clutter"
+  }
 }

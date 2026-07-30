@@ -547,6 +547,35 @@ def gen_size(cols, rows, res, cell_h=16, cell_w=8):
     return q(w), q(h)
 
 
+def sauce_provenance(a, seed, prompt):
+    """The settings that produced this piece, for the SAUCE COMNT block.
+
+    Recorded on every file, always: the art is a pure function of (seed, model,
+    settings, prompt), so with these written down any piece can be re-derived
+    exactly — and without them a result you like is a result you cannot get back.
+    SAUCE comments are the one standard place in a .ANS to put this, and readers
+    that do not care skip the block by design.
+
+    Kept to a handful of short lines; the prompt goes last because it is the
+    only part that wraps.
+    """
+    bits = [f"ansimon seed={seed}"]
+    if not a.no_lora:
+        bits.append(f"lora={os.path.splitext(a.lora)[0]}@{a.lora_strength:g}")
+    bits.append(f"base={os.path.splitext(a.base)[0]}")
+    lines = ["  ".join(bits),
+             f"grid={a.cols}x{a.rows} cell={9 if a.font_9px else 8}x"
+             f"{8 if a.vga50 else 16} depth={a.depth} charset={a.charset}",
+             f"palette={a.palette} shading={a.shading}"
+             f"{' colors=' + a.colors if a.colors else ''}"
+             f"{' locked' if a.lock_palette else ''}",
+             f"steps={a.steps} cfg={a.cfg:g} sampler={a.sampler}/{a.scheduler}"]
+    if a.style:
+        lines.append(f"style={a.style}")
+    lines.append(f"prompt={prompt}")
+    return "\n".join(lines)
+
+
 def build_graph(a, seed, subject=None, server=None):
     subject = subject if subject is not None else a.prompt
     # The ANSI LoRA does the heavy lifting; the base prompt stays simple and
@@ -638,7 +667,8 @@ def build_graph(a, seed, subject=None, server=None):
                               "sauce": not a.no_sauce,
                               "xb_compress": not a.no_compress,
                               "xb_embed_font": not a.no_embed_font,
-                              "rgb_dialect": a.rgb_dialect}}
+                              "rgb_dialect": a.rgb_dialect,
+                              "comments": sauce_provenance(a, seed, prompt)}}
 
     model_src, clip_src = _chain_loras(a, g)
     g["6"]["inputs"]["clip"] = clip_src

@@ -356,7 +356,7 @@ def font_name_for(cell_h):
 def sauce_record(data_len, cols, rows, title="", author="", group="",
                  date="", ice=False, aspect_square=True,
                  datatype=DATATYPE_CHARACTER, filetype=FILETYPE_ANSI,
-                 font=None, cell_h=16, cell_w=8):
+                 font=None, cell_h=16, cell_w=8, comments=None):
     """Build the 128-byte SAUCE record that describes an ANSI file.
 
     `date` is YYYYMMDD; callers pass one explicitly rather than reading the
@@ -384,17 +384,69 @@ def sauce_record(data_len, cols, rows, title="", author="", group="",
     rec += int(rows).to_bytes(2, "little")       # TInfo2 = height
     rec += (0).to_bytes(2, "little")             # TInfo3
     rec += (0).to_bytes(2, "little")             # TInfo4
-    rec += bytes([0])                            # comment lines
+    rec += bytes([len(comnt_lines(comments))])   # comment lines
     rec += bytes([tflags])
     rec += fixed(font or font_name_for(cell_h), 22)   # TInfoS = font name
     assert len(rec) == 128, len(rec)
     return bytes(rec)
 
 
+# ---------------------------------------------------------------------------
+# SAUCE comments (the COMNT block) — where the settings that made the file go.
+#
+# Layout of a commented file:
+#
+#     <art bytes> 0x1A "COMNT" <n x 64-byte lines> <128-byte SAUCE record>
+#
+# Each line is EXACTLY 64 bytes, space padded, no terminator, and the record's
+# comment-count byte must agree or readers mis-seek and lose the SAUCE entirely.
+# Max 255 lines because the count is one byte.
+#
+# This is the only standard place in a .ANS to record how it was made. Worth
+# doing: the art is reproducible from (seed, model, settings), and without them
+# written down a piece you like is a piece you cannot re-derive.
+# ---------------------------------------------------------------------------
+COMNT_ID = b"COMNT"
+COMNT_LINE = 64
+COMNT_MAX = 255
+
+
+def comnt_lines(comments):
+    """Normalise comments to a list of <=64-char strings, at most 255 of them.
+
+    Long lines are wrapped rather than truncated, so a full prompt survives.
+    """
+    if not comments:
+        return []
+    if isinstance(comments, str):
+        comments = comments.splitlines()
+    out = []
+    for c in comments:
+        c = str(c).rstrip()
+        if not c:
+            out.append("")
+            continue
+        while c and len(out) < COMNT_MAX:
+            out.append(c[:COMNT_LINE])
+            c = c[COMNT_LINE:]
+    return out[:COMNT_MAX]
+
+
+def comnt_block(comments):
+    """The COMNT block bytes, or b'' when there are no comments."""
+    lines = comnt_lines(comments)
+    if not lines:
+        return b""
+    out = bytearray(COMNT_ID)
+    for line in lines:
+        out += line.encode("cp437", "replace")[:COMNT_LINE].ljust(COMNT_LINE, b" ")
+    return bytes(out)
+
+
 def write_ans(path, ch, fg, bg, ice=False, sauce=True, title="", author="",
               group="", date="", aspect_square=True, cell_h=16,
-              depth="16", dialect="pablo", fallback=None):
-    """Write a complete `.ANS` file (art + EOF marker + SAUCE)."""
+              depth="16", dialect="pablo", fallback=None, comments=None):
+    """Write a complete `.ANS` file (art + EOF marker + [COMNT] + SAUCE)."""
     body = to_ans(ch, fg, bg, ice=ice, depth=depth, dialect=dialect,
                   fallback=fallback)
     with open(path, "wb") as f:
@@ -402,8 +454,12 @@ def write_ans(path, ch, fg, bg, ice=False, sauce=True, title="", author="",
         if sauce:
             rows, cols = np.asarray(ch).shape
             f.write(b"\x1a")
+            # COMNT goes BETWEEN the EOF marker and the record, and the record's
+            # count byte must match — sauce_record derives it from the same list.
+            f.write(comnt_block(comments))
             f.write(sauce_record(len(body), cols, rows, title, author, group,
-                                 date, ice, aspect_square, cell_h=cell_h))
+                                 date, ice, aspect_square, cell_h=cell_h,
+                                 comments=comments))
     return len(body)
 
 

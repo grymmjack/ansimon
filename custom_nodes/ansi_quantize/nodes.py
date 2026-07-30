@@ -714,6 +714,7 @@ class SaveAnsi:
                 "xb_compress": ("BOOLEAN", {"default": True}),
                 "xb_embed_font": ("BOOLEAN", {"default": True}),
                 "rgb_dialect": (["pablo", "xterm"], {"default": "pablo"}),
+                "comments": ("STRING", {"default": "", "multiline": True}),
             },
         }
 
@@ -724,7 +725,7 @@ class SaveAnsi:
 
     def save(self, cells_b64, filename_prefix, format="ans", title="", author="",
              group="", date="", sauce=True, xb_compress=True, xb_embed_font=True,
-             rgb_dialect="pablo"):
+             rgb_dialect="pablo", comments=""):
         ch, fg, bg, pal, ice, cell_h, cell_w, depth = ansi_fmt.unpack_cells(
             base64.b64decode(cells_b64))
         rows, cols = ch.shape
@@ -744,9 +745,12 @@ class SaveAnsi:
             body = ansi_fmt.to_ans(ch, fg, bg, ice=ice, depth=depth,
                                    dialect=rgb_dialect, fallback=fb)
             if sauce:
-                body += b"\x1a" + ansi_fmt.sauce_record(
-                    len(body), cols, rows, title, author, group, date, ice,
-                    cell_h=cell_h, cell_w=cell_w)
+                # COMNT sits between the EOF marker and the record; the record's
+                # count byte is derived from the same list so they cannot drift.
+                body += b"\x1a" + ansi_fmt.comnt_block(comments) \
+                        + ansi_fmt.sauce_record(
+                            len(body), cols, rows, title, author, group, date,
+                            ice, cell_h=cell_h, cell_w=cell_w, comments=comments)
             blobs["ans"] = body
         if format in ("xb", "both"):
             body = xbin_fmt.to_xbin(ch, fg, bg, palette=pal, ice=ice,
@@ -756,9 +760,11 @@ class SaveAnsi:
                 # SAUCE for XBin: DataType 6 (XBin), FileType 0. Width/height
                 # are already authoritative in the XBin header; SAUCE just adds
                 # the title/author/group metadata.
-                body += b"\x1a" + ansi_fmt.sauce_record(
-                    len(body), cols, rows, title, author, group, date, ice,
-                    datatype=6, filetype=0, cell_h=cell_h, cell_w=cell_w)
+                body += b"\x1a" + ansi_fmt.comnt_block(comments) \
+                        + ansi_fmt.sauce_record(
+                            len(body), cols, rows, title, author, group, date,
+                            ice, datatype=6, filetype=0, cell_h=cell_h,
+                            cell_w=cell_w, comments=comments)
             blobs["xb"] = body
 
         try:
