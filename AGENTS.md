@@ -65,6 +65,16 @@ the palette the user asked for. `tools/gauntlet.py` encodes exactly this rule in
 `ans_is_palette_faithful()`, and forces a `.xb` for the cases where the `.ans`
 cannot be judged.
 
+**1a. The 9-dot cell is 8x16 only, and that is an invariant-1 issue.**
+The 9th column is a *rendering* choice, never file content: XBin's font block is
+8 px wide by spec (one byte per row) and `.ANS` stores no font at all. So a
+widened cell only agrees with other renderers where they also widen — and the
+9-dot clock existed for exactly one mode, VGA 80x25 at 720x400 with 9x16 cells.
+VGA50 is 8x8 at 640x400 on an 8-dot clock; there was no 9x8 text mode.
+pixelview refuses it explicitly (`allow_9px: glyph_h == FONT_H`), so a 9x8
+render is 720 px wide here and 640 px everywhere else — the PNG lying about its
+own `.ans`. `--font-9px` with `--vga50` is therefore refused. Do not "enable" it.
+
 **1b. A palette that will be embedded must be DAC-snapped before rendering.**
 XBin's palette block is 6 bits per channel, so arbitrary RGB does not survive
 (`(d<<2)|(d>>4)` lands 1-2 away). Render from the requested palette and write

@@ -1199,6 +1199,27 @@ def main():
                   f"not colours. Add --format both for a .xb (embeds the "
                   f"palette) or use --truecolor --lock-palette.{C['rst']}")
 
+    # The 9-dot cell belongs to ONE mode: VGA's 80x25 text mode, 9x16 cells at
+    # 720x400. Its character clock was 9 pixels wide while the ROM font was 8,
+    # which is where the 1px gap (and the 0xC0-0xDF column repeat that closes it
+    # for box rules) comes from. VGA50 is a different mode entirely — 8x8 cells
+    # at 640x400, on an 8-dot clock, no gap. There was never a 9x8 text mode.
+    #
+    # This matters beyond pedantry. The 9th column is a RENDERING choice, not
+    # something any file can carry: XBin's font block is 8 px wide by spec, one
+    # byte per row, and .ANS stores no font at all. So a 9x8 render is
+    # reproducible by nothing else — pixelview refuses it explicitly
+    # (`allow_9px: glyph_h == FONT_H`), and ansimon's PNG would disagree with
+    # its own .ans in any other viewer. That breaks invariant 1, so refuse the
+    # combination rather than emit a file whose look cannot travel.
+    if a.font_9px and a.vga50:
+        sys.exit("--font-9px and --vga50 don't combine: the 9-dot cell exists "
+                 "only for the 8x16 VGA text mode (720x400). VGA50 is 8x8 on an "
+                 "8-dot clock — DOS had no 9x8 mode, and the 9th column can't be "
+                 "stored in .ans or .xb anyway, so nothing else would render it "
+                 "the same.\n"
+                 "  Use --font-9px alone for 9x16, or --vga50 alone for 8x8.")
+
     # --shading can only do anything if the charset actually contains the shade
     # glyphs it works with. Under `halfblock` (space, block, half block) there
     # are none, so every level from minimal to full is identical to none — the
