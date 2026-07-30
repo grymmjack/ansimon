@@ -168,7 +168,7 @@ def print_help():
 {c['b']}CANVAS{c['rst']}
 {opt('--size WxH|PRESET', 'canvas in CHARACTERS, or a preset name', '80x40')}
 {opt('', f"presets: {', '.join(f'{k}={v[0]}x{v[1]}' for k, v in PRESETS.items())}")}
-{opt('--charset NAME', 'which CP437 characters may be used', 'halfblock')}
+{opt('--charset NAME', 'which CP437 characters may be used', 'blocks')}
 {opt('', f"one of: {', '.join(CHARSETS)}  (--list-charsets)")}
 {opt('--palette NAME', 'the 16 colours to render with', 'ansi')}
 {opt('--aspect MODE', "'square' or 'classic' (4:3 CRT stretch)", 'square')}
@@ -187,7 +187,7 @@ def print_help():
 {opt('--lock-palette', "at rgb depth, lock to --palette's exact RGB,")}
 {opt('', 'at its full length. How non-EGA palettes reach .ans.')}
 {opt('--rgb-dialect D', 'pablo (ESC[1;r;g;bt) | xterm (38;2)', 'pablo')}
-{opt('--shading LEVEL', 'none | light | medium | full', 'light')}
+{opt('--shading LEVEL', 'none | minimal | light | medium | full', 'minimal')}
 {opt('--vga50', '8x8 cell instead of 8x16 (twice the rows)')}
 {opt('--font-9px', '9-dot VGA cell (box rules join)')}
 {opt('--aspect classic', '1.2x vertical stretch, the 4:3 CRT look')}
@@ -926,8 +926,8 @@ def main():
     # more reliably than any richer vocabulary, because hard cell-aligned edges
     # ARE the aesthetic. Wider charsets reproduce the source render more
     # faithfully and look more like pixel art for exactly that reason.
-    p.add_argument("--charset", default="halfblock",
-                   help=f"CP437 subset: {', '.join(CHARSETS)}. default halfblock")
+    p.add_argument("--charset", default="blocks",
+                   help=f"CP437 subset: {', '.join(CHARSETS)}. default blocks — the block set plus the shade ramp, which is what --shading needs")
     p.add_argument("--palette", default="ansi",
                    help=f"16-colour palette: {', '.join(PALETTES)}. default ansi")
     p.add_argument("--aspect", default="square",
@@ -983,7 +983,7 @@ def main():
                    help="8x8 cell (VGA50 / EGA43) instead of 8x16 — twice the "
                         "rows in the same pixels. The SAUCE font name is what "
                         "selects this for viewers, not the XBin fontsize byte.")
-    p.add_argument("--shading", default="light",
+    p.add_argument("--shading", default="minimal",
                    choices=["none", "minimal", "light", "medium", "full"],
                    help="how eagerly the shade characters ░▒▓ may blend two "
                         "colours into an intermediate tone. Measured share of "
@@ -991,7 +991,7 @@ def main():
                         "20%%, medium 36%%, full ~half. Hand-drawn scene art "
                         "sits near 10%%, so 'minimal' is the faithful one. "
                         "Needs a charset containing ░▒▓ (blocks, geometric, "
-                        "full) — it does nothing under halfblock. default light")
+                        "full) — it does nothing under halfblock. default minimal")
     p.add_argument("--black-bg", dest="black_bg", action="store_true",
                    help="pin every background to black")
     p.add_argument("--steps", type=int, default=None, help="sampling steps. default 30")

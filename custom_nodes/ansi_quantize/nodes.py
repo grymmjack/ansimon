@@ -42,15 +42,15 @@ from . import ansi as ansi_fmt
 from . import xbin as xbin_fmt
 from .cp437 import (CELL_H, CELL_W, CHARSETS, SHADES, charset_indices, font,
                     glyph_bitmaps)
-
-# The shade ramp, as a set, for "can this charset shade at all" tests.
-SHADE_GLYPHS = frozenset(SHADES)
 from .palette import (ALL_PALETTES, parse_palette, parse_palette_full,
                       xterm256_palette)
 
 _RESAMPLE = {"nearest": Image.NEAREST, "box (area average)": Image.BOX,
              "lanczos": Image.LANCZOS}
 _CHARSET_NAMES = list(CHARSETS.keys())
+
+# The shade ramp as a set, for "can this charset shade at all" tests.
+SHADE_GLYPHS = frozenset(SHADES)
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +525,7 @@ class AnsiQuantize:
                 "image": ("IMAGE",),
                 "cols": ("INT", {"default": 80, "min": 8, "max": 320, "step": 1}),
                 "rows": ("INT", {"default": 50, "min": 4, "max": 200, "step": 1}),
-                "charset": (list(_CHARSET_NAMES), {"default": "halfblock"}),
+                "charset": (list(_CHARSET_NAMES), {"default": "blocks"}),
                 "palette": (list(ALL_PALETTES.keys()) + ["Custom"],
                             {"default": "ansi"}),
             },
@@ -538,7 +538,7 @@ class AnsiQuantize:
                 "depth": (["16", "256", "rgb"], {"default": "16"}),
                 "lock_palette": ("BOOLEAN", {"default": False}),
                 "shading": (["none", "minimal", "light", "medium", "full"],
-                            {"default": "light"}),
+                            {"default": "minimal"}),
                 "cell_height": ([16, 8], {"default": 16}),
                 "cell_width": ([8, 9], {"default": 8}),
                 "smooth": (["mode", "median", "none"], {"default": "mode"}),

@@ -500,14 +500,27 @@ testing production.
 
 ## Defaults, and why
 
-- `--charset halfblock` — hard cell-aligned edges read as ANSI; richer charsets
-  reproduce the source render more faithfully and therefore look more like pixel
-  art. Same reason not to raise the grid past ~120 columns for "quality".
+- `--charset blocks` — the block set plus the shade ramp `░▒▓`. Hard
+  cell-aligned edges read as ANSI, and `blocks` keeps that while giving the
+  matcher the glyphs shading needs. Do **not** reach for `full` or `ascii` for
+  "quality": those reproduce the source render more faithfully and therefore
+  look more like pixel art, which is the opposite of the goal. Same reason not
+  to raise the grid past ~120 columns.
+  (Was `halfblock` until grymmjack chose `blocks --shading minimal`; halfblock
+  contains no shade glyphs, so `--shading` was dead under the old default.)
+- `--shading minimal` — measured share of cells that become a shade glyph:
+  `minimal` 10%, `light` 20%, `medium` 36%, `full` ~half. Hand-drawn scene art
+  sits near 10%, so `minimal` is the faithful level and everything above it is
+  texture. Calibrated by sweeping `shade_bias` against a rendered PNG on CPU,
+  not guessed: `0.03 -> 7.3%`, `0.05 -> 9.9%`, `0.10 -> 19.6%`.
 - `--dither` **off** — error diffusion scatters ink into empty cells (blank
   cells 36% -> 25%, against ~60% in real scene art) and reads as mush.
 - Shade blending is the *right* way to dither in ANSI: `0xB0/B1/B2` over a
   foreground/background pair yields 720 tones from 16 colours. It must be
   enumerated, not derived — deriving fg/bg from a cell's own pixels gives
-  fg == bg on a flat cell, so the blend is never a candidate. `shade_bias`
-  defaults low (0.10); at 1.0 it dithers 75% of the canvas against a real
-  corpus's 10%.
+  fg == bg on a flat cell, so the blend is never a candidate.
+- `--lora ansi-art-xl` at `--lora-strength 0.9`, `--depth 16`. Chosen by
+  grymmjack after a 28-render comparison across 14 LoRAs and a 28-render
+  strength/depth sweep. It was already the default; the comparison is what
+  confirmed it, and it was one of only two LoRAs that gained rather than lost
+  colour going from strength 0.7 to 1.0.
