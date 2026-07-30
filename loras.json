@@ -14,6 +14,11 @@
   "teletext-screens-xl": {"trigger": "p1x3lt3xt",      "base": "SDXL",  "civitai": 819205,  "note": "Teletext & Pixel Screens SDXL"},
   "zxspectrum-xl":       {"trigger": "zxspectrum syle", "base": "SDXL", "civitai": 285232,  "note": "trigger is misspelled upstream ('syle') — kept verbatim, because that is the token it was trained on"},
 
+  "ascii-image-xl":       {"trigger": "",              "base": "SDXL",  "civitai": 1156960, "note": "ASCII_image; no trigger word. Login-gated on civitai"},
+  "ascii-skyscrapers-xl": {"trigger": "ASCII skyscr4p3rs", "base": "SDXL", "civitai": 2359793, "note": "subject-locked to skyscrapers; login-gated"},
+  "c64-style-xl":         {"trigger": "c64style",      "base": "SDXL",  "civitai": 1264048, "note": "also answers to commodore64style / c64pixelartstyle; login-gated"},
+  "greenphosphor-xl":     {"trigger": "mntnnc_md_plz_stand_by", "base": "SDXL", "civitai": 639110, "note": "monochrome green-phosphor terminal; login-gated"},
+
   "dosegafx":            {"trigger": "dosegafx",       "base": "SDXL",  "note": "pre-existing local LoRA; trigger inferred from the name"},
   "dosegafx-v1":         {"trigger": "dosegafx",       "base": "SDXL",  "note": "pre-existing local LoRA"},
 
